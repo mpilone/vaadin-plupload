@@ -85,77 +85,78 @@ class PluploadRequestHandler implements RequestHandler {
       handleUploadRequest(session, request, response);
       return true;
     }
-    else if (requestPath.equals(url + "/flash")) {
-      handleFlashRequest(session, request, response);
-      return true;
-    }
-    else if (requestPath.equals(url + "/silverlight")) {
-      handleSilverlightRequest(session, request, response);
-      return true;
-    }
+// No longer used. ClassResources are used instead.
+//    else if (requestPath.equals(url + "/flash")) {
+//      handleFlashRequest(session, request, response);
+//      return true;
+//    }
+//    else if (requestPath.equals(url + "/silverlight")) {
+//      handleSilverlightRequest(session, request, response);
+//      return true;
+//    }
     else {
       return false;
     }
   }
 
-  /**
-   * Handles the request for the Silverlight upload component and writes the
-   * component binary to the response.
-   *
-   * @param session the HTTP session
-   * @param request the HTTP request
-   * @param response the HTTP response
-   *
-   * @throws IOException
-   */
-  private void handleSilverlightRequest(VaadinSession session,
-      VaadinRequest request, VaadinResponse response) throws IOException {
-    log.debug("Returning silverlight upload component.");
-
-    byte[] data;
-    try (InputStream instream =
-        getClass().getResourceAsStream("plupload/Moxie.xap")) {
-      data = readAll(instream);
-    }
-
-    try (OutputStream outstream = response.getOutputStream()) {
-      response.setContentType("application/x-silverlight-app");
-      response.setStatus(HttpServletResponse.SC_OK);
-      response.setHeader("Content-Length", String.valueOf(data.length));
-      outstream.write(data);
-    }
-
-    log.debug("Wrote silverlight upload component: " + data.length);
-  }
-
-  /**
-   * Handles the request for the Flash upload component and writes the component
-   * binary to the response.
-   *
-   * @param session the HTTP session
-   * @param request the HTTP request
-   * @param response the HTTP response
-   *
-   * @throws IOException
-   */
-  private void handleFlashRequest(VaadinSession session, VaadinRequest request,
-      VaadinResponse response) throws IOException {
-    log.debug("Returning flash upload component.");
-
-    byte[] data;
-    try (InputStream instream =
-        getClass().getResourceAsStream("plupload/Moxie.swf")) {
-      data = readAll(instream);
-    }
-    try (OutputStream outstream = response.getOutputStream()) {
-      response.setContentType("application/x-shockwave-flash");
-      response.setStatus(HttpServletResponse.SC_OK);
-      response.setHeader("Content-Length", String.valueOf(data.length));
-      outstream.write(data);
-    }
-
-    log.debug("Wrote flash upload component: " + data.length);
-  }
+//  /**
+//   * Handles the request for the Silverlight upload component and writes the
+//   * component binary to the response.
+//   *
+//   * @param session the HTTP session
+//   * @param request the HTTP request
+//   * @param response the HTTP response
+//   *
+//   * @throws IOException
+//   */
+//  private void handleSilverlightRequest(VaadinSession session,
+//      VaadinRequest request, VaadinResponse response) throws IOException {
+//    log.debug("Returning silverlight upload component.");
+//
+//    byte[] data;
+//    try (InputStream instream =
+//        getClass().getResourceAsStream("plupload/Moxie.xap")) {
+//      data = readAll(instream);
+//    }
+//
+//    try (OutputStream outstream = response.getOutputStream()) {
+//      response.setContentType("application/x-silverlight-app");
+//      response.setStatus(HttpServletResponse.SC_OK);
+//      response.setHeader("Content-Length", String.valueOf(data.length));
+//      outstream.write(data);
+//    }
+//
+//    log.debug("Wrote silverlight upload component: " + data.length);
+//  }
+//
+//  /**
+//   * Handles the request for the Flash upload component and writes the component
+//   * binary to the response.
+//   *
+//   * @param session the HTTP session
+//   * @param request the HTTP request
+//   * @param response the HTTP response
+//   *
+//   * @throws IOException
+//   */
+//  private void handleFlashRequest(VaadinSession session, VaadinRequest request,
+//      VaadinResponse response) throws IOException {
+//    log.debug("Returning flash upload component.");
+//
+//    byte[] data;
+//    try (InputStream instream =
+//        getClass().getResourceAsStream("plupload/Moxie.swf")) {
+//      data = readAll(instream);
+//    }
+//    try (OutputStream outstream = response.getOutputStream()) {
+//      response.setContentType("application/x-shockwave-flash");
+//      response.setStatus(HttpServletResponse.SC_OK);
+//      response.setHeader("Content-Length", String.valueOf(data.length));
+//      outstream.write(data);
+//    }
+//
+//    log.debug("Wrote flash upload component: " + data.length);
+//  }
 
   /**
    * Handles the data upload request. The data will be read from the request and

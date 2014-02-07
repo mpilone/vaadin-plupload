@@ -19,6 +19,7 @@ import com.vaadin.server.*;
 import com.vaadin.ui.AbstractJavaScriptComponent;
 import com.vaadin.ui.Component;
 import com.vaadin.ui.Upload;
+import com.vaadin.util.FileTypeResolver;
 
 /**
  * Wrapper for the Plupload HTML5/Flash/HTML4 upload component. You can find
@@ -155,6 +156,17 @@ public class Plupload extends AbstractJavaScriptComponent {
   public Plupload() {
     registerRpc(rpc);
 
+    // Add the Silverlight mime-type if it isn't already in the resolver.
+    if (FileTypeResolver.DEFAULT_MIME_TYPE.equals(FileTypeResolver.getMIMEType(
+        "Moxie.xap"))) {
+      FileTypeResolver.addExtension("xap", "application/x-silverlight-app");
+    }
+
+    setResource("flashSwfUrl", new ClassResource(getClass(),
+        "plupload/Moxie.swf"));
+    setResource("silverlightSwfUrl", new ClassResource(getClass(),
+        "plupload/Moxie.xap"));
+
     setRuntimes("html5,flash,silverlight,html4");
     setChunkSize(null);
     setMaxFileSize(10 * 1024 * 1024L);
@@ -212,7 +224,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   protected void fireUpdateProgress(long totalBytes, long contentLength) {
 
-    log.info("Firing progress on plupload {}", System.identityHashCode(this));
+    //log.info("Firing progress on plupload {}", System.identityHashCode(this));
 
     // This may be a progress event from a single chunk. We can ignore this
     // if we know we're going to have multiple chunks. If is a single chunk,

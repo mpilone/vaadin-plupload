@@ -43,9 +43,14 @@ org_mpilone_vaadin_Plupload = function() {
 	 * Builds and returns a Plupload uploader component using 
 	 * the given state information.
 	 */
-	function buildUploader(state) {
+	function buildUploader(that, state) {
 		console_log("Building uploader for connector " + connectorId);
 				
+        var flashSwfUrl = that.translateVaadinUri(state.resources["flashSwfUrl"].uRL);
+		var silverlightXapUrl = that.translateVaadinUri(state.resources["silverlightSwfUrl"].uRL);
+        
+        console_log("Flash URL " + flashSwfUrl);
+                
 		var uploader = new plupload.Uploader({
 			runtimes: state.runtimes,
 		    browse_button : 'plupload_browse_button_' + connectorId,
@@ -55,8 +60,8 @@ org_mpilone_vaadin_Plupload = function() {
             max_retries: state.maxRetries,
 		    multi_selection: state.multiSelection,
 		    url: state.url + '/upload',
-		    flash_swf_url: state.url + '/flash',
-		    silverlight_xap_url: state.url + '/silverlight'
+		    flash_swf_url: flashSwfUrl,
+		    silverlight_xap_url: silverlightXapUrl
 		});
 		
 		uploader.bind('UploadFile', function(up, file) {
@@ -129,14 +134,10 @@ org_mpilone_vaadin_Plupload = function() {
 		console_log("State change!");
 		
 		var uploadUrl = state.url + "/upload";
-		var flashUrl = state.url + "/flash";
-		var silverlightUrl = state.url + "/silverlight";
 		
 		// Check for any state changes that require a complete rebuild of the uploader.
 		var rebuild = uploader === undefined;
 		rebuild = rebuild || uploader.settings.url !== uploadUrl;
-		rebuild = rebuild || uploader.settings.flash_swf_url !== flashUrl;
-		rebuild = rebuild || uploader.settings.silverlight_xap_url !== silverlightUrl;
 		rebuild = rebuild || uploader.settings.runtimes !== state.runtimes;
 		
 		// If we need to rebuild, destroy the current uploader and recreate it.
@@ -145,7 +146,7 @@ org_mpilone_vaadin_Plupload = function() {
 				uploader.destroy();
 			}
 			try {
-				uploader = buildUploader(state);
+				uploader = buildUploader(this, state);
 			}
 			catch (ex) {
 				// TODO: This needs to be cleaned up!
