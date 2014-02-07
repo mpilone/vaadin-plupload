@@ -1,12 +1,12 @@
 
 package org.mpilone.vaadin;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
-
-import javax.servlet.http.HttpServletRequest;
 
 import org.mpilone.vaadin.shared.PluploadError;
 import org.mpilone.vaadin.shared.PluploadServerRpc;
@@ -119,7 +119,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    * The request handler which can return the Flash and Silverlight component as
    * well as handle the incoming data upload from the Plupload_orig component.
    */
-  private PluploadRequestHandler requestHandler;
+  //private PluploadRequestHandler requestHandler;
 
   private boolean interrupted;
 
@@ -177,27 +177,19 @@ public class Plupload extends AbstractJavaScriptComponent {
   public void attach() {
     super.attach();
 
-    log.info("Adding request handler {} for Plupload {} data.", System.
-        identityHashCode(requestHandler), System.identityHashCode(this));
+    String url = getSession().getCommunicationManager().
+        getStreamVariableTargetUrl(this, "plupload", getStreamVariable());
 
-    if (requestHandler == null) {
-      HttpServletRequest servletRequest = ((VaadinServletRequest) VaadinService
-          .getCurrentRequest()).getHttpServletRequest();
-      String vaadinServletPath = servletRequest.getContextPath()
-          + servletRequest.getServletPath();
-      getState().url = vaadinServletPath + "/plupload/" + getConnectorId();
-
-      this.requestHandler = new PluploadRequestHandler(getState().url,
-          getStreamVariable());
-
-      getSession().addRequestHandler(requestHandler);
-    }
+    getState().url = url;
   }
 
   @Override
   public void detach() {
-    log.debug("Removing request handler for Plupload data.");
-    getSession().removeRequestHandler(requestHandler);
+    log.debug("Cleaning up stream variable.");
+
+    // Cleanup our stream variable.
+    getUI().getConnectorTracker().cleanStreamVariable(getConnectorId(),
+        "plupload");
 
     super.detach();
   }
@@ -671,6 +663,7 @@ public class Plupload extends AbstractJavaScriptComponent {
       com.vaadin.server.StreamVariable {
 
     private StreamVariable.StreamingStartEvent lastStartedEvent;
+    private OutputStream outstream;
 
     @Override
     public boolean listenProgress() {
@@ -691,10 +684,16 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public OutputStream getOutputStream() {
-      OutputStream receiveUpload = receiver.receiveUpload(
-          lastStartedEvent.getFileName(),
-          lastStartedEvent.getMimeType());
-      return receiveUpload;
+      if (outstream == null) {
+        outstream = receiver.receiveUpload(
+            lastStartedEvent.getFileName(),
+            lastStartedEvent.getMimeType());
+      }
+
+      // We don't want to permit closing of the output stream because
+      // we may have a chunked upload that we need to write to the
+      // same output stream.
+      return new UncloseableOutputStream(outstream);
     }
 
     @Override
@@ -708,6 +707,12 @@ public class Plupload extends AbstractJavaScriptComponent {
       // may only be one of many chunks.
       bytesRead += event.getBytesReceived();
       fireUpdateProgress(bytesRead, contentLength);
+
+      if (bytesRead == contentLength) {
+        // This is the last chunk. Cleanup.
+
+        outstream = null;
+      }
 
       lastStartedEvent = null;
     }
@@ -727,6 +732,47 @@ public class Plupload extends AbstractJavaScriptComponent {
         fireUploadInterrupted(event.getFileName(),
             event.getMimeType(), 0, exception);
       }
+      tryClose(outstream);
+      outstream = null;
+      endUpload();
+    }
+
+    private void tryClose(Closeable closeable) {
+      try {
+        closeable.close();
+      }
+      catch (IOException ex) {
+        // Ignore
+      }
+    }
+  }
+
+  private static class UncloseableOutputStream extends OutputStream {
+
+    private OutputStream delegate;
+
+    public UncloseableOutputStream(OutputStream delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void write(byte[] b) throws IOException {
+      delegate.write(b);
+    }
+
+    @Override
+    public void write(int b) throws IOException {
+      delegate.write(b);
+    }
+
+    @Override
+    public void write(byte[] b, int off, int len) throws IOException {
+      delegate.write(b, off, len);
+    }
+
+    @Override
+    public void close() throws IOException {
+      delegate.flush();
     }
   }
 
