@@ -1,19 +1,21 @@
+
 package org.mpilone.vaadin;
 
-import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Lock;
+import java.io.OutputStream;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 
 import javax.servlet.http.HttpServletRequest;
 
-import org.mpilone.vaadin.shared.*;
+import org.mpilone.vaadin.shared.PluploadError;
+import org.mpilone.vaadin.shared.PluploadServerRpc;
+import org.mpilone.vaadin.shared.PluploadState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.vaadin.annotations.JavaScript;
-import com.vaadin.server.VaadinService;
-import com.vaadin.server.VaadinServletRequest;
-import com.vaadin.server.VaadinSession;
+import com.vaadin.server.*;
 import com.vaadin.ui.AbstractJavaScriptComponent;
 import com.vaadin.ui.Component;
 import com.vaadin.ui.Upload;
@@ -21,13 +23,13 @@ import com.vaadin.ui.Upload;
 /**
  * Wrapper for the Plupload HTML5/Flash/HTML4 upload component. You can find
  * more information at http://www.plupload.com/.
- * 
+ *
  * TODO: this class needs to be documented and requires some more functionality
  * (such as more listeners and file removal support).
- * 
+ *
  * @author mpilone
  */
-@JavaScript({ "plupload_connector.js", "plupload/plupload.full.js" })
+@JavaScript({"plupload_connector.js", "plupload/plupload.full.min.js"})
 public class Plupload extends AbstractJavaScriptComponent {
 
   /**
@@ -40,452 +42,102 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   private final Logger log = LoggerFactory.getLogger(getClass());
 
-  /**
-   * A global counter used to generate unique IDs for each upload component to
-   * prevent element collisions and to differentiate data requests.
-   */
-  private final static AtomicLong instanceCounter = new AtomicLong();
+  private final static Method SUCCEEDED_METHOD;
+  private final static Method STARTED_METHOD;
+  private final static Method FINISHED_METHOD;
+  private final static Method FAILED_METHOD;
 
-  /**
-   * An event involving a single file modification.
-   * 
-   * @author mpilone
-   */
-  public static class SingleFileEvent extends Component.Event {
-    /**
-     * Serialization ID.
-     */
-    private static final long serialVersionUID = 1L;
-
-    /**
-     * The file involved in the event.
-     */
-    private PluploadFile file;
-
-    /**
-     * Constructs the event with the given source and file.
-     * 
-     * @param source
-     *          the source upload component
-     * @param file
-     *          the file involved in the event
-     */
-    public SingleFileEvent(Plupload source, PluploadFile file) {
-      super(source);
-      this.file = file;
+  static {
+    try {
+      SUCCEEDED_METHOD = SucceededListener.class.getMethod("uploadSucceeded",
+          SucceededEvent.class);
+      FAILED_METHOD = FailedListener.class.getMethod("uploadFailed",
+          FailedEvent.class);
+      STARTED_METHOD = StartedListener.class.getMethod("uploadStarted",
+          StartedEvent.class);
+      FINISHED_METHOD = FinishedListener.class.getMethod("uploadFinished",
+          FinishedEvent.class);
     }
-
-    /**
-     * Returns the file involved in the event.
-     * 
-     * @return the file involved in the event
-     */
-    public PluploadFile getFile() {
-      return file;
+    catch (NoSuchMethodException | SecurityException ex) {
+      throw new RuntimeException("Unable to find listener event method.", ex);
     }
   }
-
-  /**
-   * An event involving multiple file modifications.
-   * 
-   * @author mpilone
-   */
-  public static class MultipleFileEvent extends Component.Event {
-    /**
-     * Default serialization ID.
-     */
-    private static final long serialVersionUID = 1L;
-
-    /**
-     * The list of file involved in the event.
-     */
-    private List<PluploadFile> files;
-
-    /**
-     * Constructs the event with the given source and files.
-     * 
-     * @param source
-     *          the source upload component
-     * @param files
-     *          the files involved in the event
-     */
-    public MultipleFileEvent(Plupload source, List<PluploadFile> files) {
-      super(source);
-      this.files = files;
-    }
-
-    /**
-     * Returns the files involved in the event.
-     * 
-     * @return the files involved in the event
-     */
-    public List<PluploadFile> getFiles() {
-      return files;
-    }
-  }
-
-  /**
-   * An error event from the upload component.
-   * 
-   * @author mpilone
-   */
-  public static class ErrorEvent extends Component.Event {
-    /**
-     * Default serialization ID.
-     */
-    private static final long serialVersionUID = 1L;
-
-    /**
-     * The message describing the event.
-     */
-    private String message;
-
-    /**
-     * Constructs the event with the given source and message.
-     * 
-     * @param source
-     *          the source upload component
-     * @param message
-     *          the message describing the error
-     */
-    public ErrorEvent(Plupload source, String message) {
-      super(source);
-      this.message = message;
-    }
-
-    /**
-     * Returns the message describing the error.
-     * 
-     * @return the message
-     */
-    public String getMessage() {
-      return message;
-    }
-  }
-
-  /**
-   * Listener for the FilesAdded event from Plupload.
-   * 
-   * @author mpilone
-   */
-  public static interface FilesAddedListener {
-    public void filesAdded(MultipleFileEvent evt);
-  }
-
-  /**
-   * Listener for the FileUploaded event from Pluplaod.
-   * 
-   * @author mpilone
-   */
-  public static interface FileUploadedListener {
-    public void fileUploaded(SingleFileEvent evt);
-  }
-
-  /**
-   * Listener for the UploadComplete event from Pluplaod.
-   * 
-   * @author mpilone
-   */
-  public static interface UploadCompleteListener {
-    public void uploadComplete(MultipleFileEvent evt);
-  }
-
-  /**
-   * Listener for the UploadProgress event from Plupload.
-   * 
-   * @author mpilone
-   */
-  public static interface UploadProgressListener {
-    public void uploadProgress(SingleFileEvent evt);
-  }
-
-  /**
-   * The progress listener which will be registered with the request handler for
-   * HTML4 runtimes. This enables progress reporting even when the runtime can't
-   * provide it directly.
-   */
-  private PluploadRequestHandler.ProgressListener progressListener = new PluploadRequestHandler.ProgressListener() {
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.PluploadRequestHandler.ProgressListener#
-     * percentChanged(int)
-     */
-    @Override
-    public void percentChanged(int percent) {
-
-      // log.debug("Upload percent changed: " + percent);
-
-      // Synchronize with the UI thread because the progrss updates will come
-      // from the request handler in a non-UI thread.
-      Lock uiLock = VaadinSession.getCurrent().getLockInstance();
-      uiLock.lock();
-      try {
-        if (uploadingFile != null) {
-          uploadingFile.setPercent(percent);
-        }
-        rpc.onUploadProgress(uploadingFile);
-      }
-      finally {
-        uiLock.unlock();
-      }
-    }
-  };
 
   /**
    * The remote procedure call interface which allows calls from the client side
    * to the server. For the most part these methods map to the events generated
-   * by the Plupload JavaScript component.
+   * by the Plupload_orig JavaScript component.
    */
-  private PluploadServerRpc rpc = new PluploadServerRpc() {
+  private final PluploadServerRpc rpc = new PluploadServerRpc() {
 
     /**
      * Serialization ID.
      */
     private static final long serialVersionUID = 1L;
 
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onUploadFile(org
-     * .prss.contentdepot.vaadin.shared.PluploadFile)
-     */
-    @Override
-    public void onUploadFile(PluploadFile file) {
-      log.debug("onUploadFile: " + file.getName());
-
-      uploadingFile = file;
-
-      // TODO add support for file upload listeners
-    }
-
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onFilesAdded(java
-     * .util.List)
-     */
-    @Override
-    public void onFilesAdded(List<PluploadFile> files) {
-      for (PluploadFile file : files) {
-        log.debug("onFilesAdded: " + file.getName());
-
-        queuedFiles.put(file.getId(), file);
-      }
-
-      // If the user wanted a maximum number of files in the queue, enforce the
-      // maximum.
-      if (maxQueuedFiles > 0 && queuedFiles.size() > maxQueuedFiles) {
-        // Make a copy of the list to avoid concurrent modification exceptions.
-        List<PluploadFile> queuedFilesCopy = new ArrayList<PluploadFile>(
-            queuedFiles.values());
-
-        // Trim the list to just the ones we want to remove.
-        queuedFilesCopy = queuedFilesCopy.subList(0, maxQueuedFiles);
-
-        // Remove each of the files.
-        for (Iterator<PluploadFile> iter = queuedFilesCopy.iterator(); iter
-            .hasNext();) {
-          PluploadFile file = iter.next();
-
-          log.debug("Removing file because there is more than one file in the queue: "
-              + file.getName());
-          removeFile(file);
-        }
-      }
-
-      filesAddedListeners
-          .fireEvent(new MultipleFileEvent(Plupload.this, files));
-    }
-
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onError(org.prss
-     * .contentdepot.vaadin.shared.PluploadError)
-     */
     @Override
     public void onError(PluploadError error) {
       log.debug("onError: [" + error.getCode() + "] " + error.getMessage());
 
-      // TODO: implement error listeners
+      fireUploadInterrupted(null, mimeType, contentLength, new RuntimeException(
+          error.
+          getMessage()));
+      endUpload();
     }
 
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onUploadProgress
-     * (org.prss.contentdepot.vaadin.shared.PluploadFile)
-     */
     @Override
-    public void onUploadProgress(PluploadFile file) {
-      log.debug("onUploadProgress: " + file.getPercent());
+    public void onUploadFile(String filename, long contentLength) {
+      log.info("Started upload of file {} with length {} to plupload {}",
+          filename, contentLength, System.identityHashCode(this));
 
-      // Update the uploading file so it has the most recent information.
-      uploadingFile = file;
+      Plupload.this.contentLength = contentLength;
 
-      uploadProgressListeners
-          .fireEvent(new SingleFileEvent(Plupload.this, file));
+      startUpload();
+      fireStarted(filename, null);
     }
 
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onFileUploaded(
-     * org.prss.contentdepot.vaadin.shared.PluploadFile)
-     */
     @Override
-    public void onFileUploaded(PluploadFile file) {
-      log.debug("onFileUploaded: " + file.getName());
+    public void onFileUploaded(String filename, long contentLength) {
+      log.info("Completed upload of file " + filename + " with length "
+          + contentLength);
 
-      // Remove the file from our queue now that it has been uploaded.
-      queuedFiles.remove(file.getId());
-      uploadingFile = null;
-
-      fileUploadedListeners.fireEvent(new SingleFileEvent(Plupload.this, file));
+      fireUploadSuccess(filename, mimeType, contentLength);
+      endUpload();
+      markAsDirty();
     }
 
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onFilesRemoved(
-     * java.util.List)
-     */
-    @Override
-    public void onFilesRemoved(List<PluploadFile> files) {
-      for (PluploadFile file : files) {
-        log.debug("onFilesRemoved: " + file.getName());
-
-        // Remove it from the list of files pending client side removal.
-        getState().removedFileIds.remove(file.getId());
-      }
-
-    }
-
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onInit(java.lang
-     * .String)
-     */
     @Override
     public void onInit(String runtime) {
-      log.debug("onInit: " + runtime);
+      log.info("Uploader initialized with runtime {}", runtime);
 
-      // Clear the queue so we make sure our file list matches the client side
-      // component.
-      queuedFiles.clear();
-
-      if (runtime.equalsIgnoreCase("html4")) {
-        // Register a progress listener so we can still generate progress events
-        // with HTML4 uploads.
-        requestHandler.setProgressListener(progressListener);
-      }
-      else {
-        // We assume that the client side runtime implementation can send
-        // progress events via RPC calls from JavaScript.
-        requestHandler.setProgressListener(null);
-      }
+      activeRuntime = runtime;
     }
-
-    /*
-     * (non-Javadoc)
-     * 
-     * @see
-     * org.prss.contentdepot.vaadin.shared.PluploadServerRpc#onUploadComplete
-     * (java.util.List)
-     */
-    public void onUploadComplete(java.util.List<PluploadFile> files) {
-      log.debug("onUploadComplete: ");
-
-      // Change the started state because the upload is complete.
-      getState().started = false;
-
-      // Fire the event to any listeners.
-      uploadCompleteListeners.fireEvent(new MultipleFileEvent(Plupload.this,
-          files));
-    };
   };
 
   /**
    * The request handler which can return the Flash and Silverlight component as
-   * well as handle the incoming data upload from the Plupload component.
+   * well as handle the incoming data upload from the Plupload_orig component.
    */
   private PluploadRequestHandler requestHandler;
 
-  /**
-   * The list of listeners interested in the upload progress event.
-   */
-  private AbstractListenable<UploadProgressListener, SingleFileEvent> uploadProgressListeners = new AbstractListenable<Plupload.UploadProgressListener, Plupload.SingleFileEvent>() {
-    @Override
-    protected void fireEvent(UploadProgressListener listener,
-        SingleFileEvent event) {
-      listener.uploadProgress(event);
-    }
-  };
+  private boolean interrupted;
 
-  /**
-   * The list of listeners interested in the files added event.
-   */
-  private AbstractListenable<FilesAddedListener, MultipleFileEvent> filesAddedListeners = new AbstractListenable<Plupload.FilesAddedListener, Plupload.MultipleFileEvent>() {
-    @Override
-    protected void fireEvent(FilesAddedListener listener,
-        MultipleFileEvent event) {
-      listener.filesAdded(event);
-    }
-  };
+  private StreamVariable streamVariable;
 
-  /**
-   * The list of listeners interested in the upload complete event.
-   */
-  private AbstractListenable<UploadCompleteListener, MultipleFileEvent> uploadCompleteListeners = new AbstractListenable<Plupload.UploadCompleteListener, Plupload.MultipleFileEvent>() {
-    @Override
-    protected void fireEvent(UploadCompleteListener listener,
-        MultipleFileEvent event) {
-      listener.uploadComplete(event);
-    }
-  };
+  private Upload.Receiver receiver;
 
-  /**
-   * The list of listeners interested in the file uploaded event.
-   */
-  private AbstractListenable<FileUploadedListener, SingleFileEvent> fileUploadedListeners = new AbstractListenable<Plupload.FileUploadedListener, Plupload.SingleFileEvent>() {
-    @Override
-    protected void fireEvent(FileUploadedListener listener,
-        SingleFileEvent event) {
-      listener.fileUploaded(event);
-    }
-  };
+  private long contentLength;
 
-  /**
-   * The map of files currently queued by file ID. A file will be removed from
-   * the map when it has been uploaded or when it is manually removed. The map
-   * is ordered with oldest first when iterating.
-   */
-  private Map<String, PluploadFile> queuedFiles;
+  private String mimeType;
 
-  /**
-   * The file that is currently uploading, if any.
-   */
-  private PluploadFile uploadingFile;
+  private long bytesRead;
 
-  /**
-   * The maximum number of files that may be in the queue. If more files are
-   * added, the oldest files in the queue will be removed. This is useful for
-   * creating a single file upload component (i.e. a queue size of 1). This
-   * method is provided for convenience as the behavior can be done manually
-   * using {@link FilesAddedListener} and the {@link #removeFile(PluploadFile)}
-   * method.
-   */
-  private int maxQueuedFiles = -1;
+  private String activeRuntime;
+
+  private final List<Upload.ProgressListener> progressListeners =
+      new ArrayList<>();
+
+  private boolean uploading;
 
   /**
    * Constructs the upload component. A unique ID will be generated for the ID
@@ -503,43 +155,33 @@ public class Plupload extends AbstractJavaScriptComponent {
   public Plupload() {
     registerRpc(rpc);
 
-    this.queuedFiles = new LinkedHashMap<String, PluploadFile>();
-
-    HttpServletRequest servletRequest = ((VaadinServletRequest) VaadinService
-        .getCurrentRequest()).getHttpServletRequest();
-    String vaadinServletPath = servletRequest.getContextPath()
-        + servletRequest.getServletPath();
-
-    getState().instanceId = instanceCounter.incrementAndGet();
-    getState().url = vaadinServletPath + "/plupload/" + getState().instanceId
-        + "-" + System.currentTimeMillis();
-    getState().runtimes = "html5,flash,silverlight,html4";
-    getState().chunkSize = null;
-    getState().maxFileSize = 10 * 1024 * 1024L;
+    setRuntimes("html5,flash,silverlight,html4");
+    setChunkSize(null);
+    setMaxFileSize(10 * 1024 * 1024L);
     getState().multiSelection = false;
-    getState().removedFileIds = new ArrayList<String>();
-
-    this.requestHandler = new PluploadRequestHandler(getState().url);
   }
 
-  /*
-   * (non-Javadoc)
-   * 
-   * @see com.vaadin.ui.AbstractComponent#attach()
-   */
   @Override
   public void attach() {
     super.attach();
 
-    log.debug("Adding request handler for Plupload data.");
-    getSession().addRequestHandler(requestHandler);
-  };
+    log.info("Adding request handler {} for Plupload {} data.", System.
+        identityHashCode(requestHandler), System.identityHashCode(this));
 
-  /*
-   * (non-Javadoc)
-   * 
-   * @see com.vaadin.ui.AbstractComponent#detach()
-   */
+    if (requestHandler == null) {
+      HttpServletRequest servletRequest = ((VaadinServletRequest) VaadinService
+          .getCurrentRequest()).getHttpServletRequest();
+      String vaadinServletPath = servletRequest.getContextPath()
+          + servletRequest.getServletPath();
+      getState().url = vaadinServletPath + "/plupload/" + getConnectorId();
+
+      this.requestHandler = new PluploadRequestHandler(getState().url,
+          getStreamVariable());
+
+      getSession().addRequestHandler(requestHandler);
+    }
+  }
+
   @Override
   public void detach() {
     log.debug("Removing request handler for Plupload data.");
@@ -549,178 +191,216 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * Starts the upload of any files in the upload queue. This method is the same
-   * as calling {@link #start()} but it was added to be more consistent with the
-   * standard Vaadin {@link Upload} component.
+   * Emits the upload success event.
+   *
+   * @param filename
+   * @param mimeType
+   * @param length
+   *
    */
-  public void submitUpload() {
-    start();
+  protected void fireUploadSuccess(String filename, String mimeType,
+      long length) {
+    fireEvent(new SucceededEvent(this, filename, mimeType, length));
   }
 
   /**
-   * Starts the upload of any files in the upload queue. Once started, the
-   * uploads cannot be stopped until an error occurs or all the data is received
-   * (this may change in the future).
+   * Emits the progress event.
+   *
+   * @param totalBytes bytes received so far
+   * @param contentLength actual size of the file being uploaded, if known
+   *
    */
-  public void start() {
-    getState().started = true;
-  }
+  protected void fireUpdateProgress(long totalBytes, long contentLength) {
 
-  /**
-   * Sets the size in bytes of each data chunk to be sent from the client to the
-   * server. Not all runtimes support chunking. If set to null, chunking will be
-   * disabled.
-   * 
-   * @param size
-   *          the size of each data chunk
-   */
-  public void setChunkSize(Long size) {
-    getState().chunkSize = size;
-  }
+    log.info("Firing progress on plupload {}", System.identityHashCode(this));
 
-  /**
-   * Sets the maximum size in bytes of files that may be selected and uploaded.
-   * 
-   * @param size
-   *          the maximum file size that may be uploaded
-   */
-  public void setMaxFileSize(long size) {
-    getState().maxFileSize = size;
-  }
-
-  /**
-   * Adds a listener to be notified of progress on a file upload.
-   * 
-   * @param listener
-   *          the listener to be notified
-   */
-  public void addUploadProgressListener(UploadProgressListener listener) {
-    uploadProgressListeners.addListener(listener);
-  }
-
-  /**
-   * Adds a listener to be notified of upload complete events.
-   * 
-   * @param listener
-   *          the listener to be notified
-   */
-  public void addUploadCompleteListener(UploadCompleteListener listener) {
-    uploadCompleteListeners.addListener(listener);
-  }
-
-  /**
-   * Adds a listener to be notified of files being added to the upload queue.
-   * 
-   * @param listener
-   *          the listener to be notified
-   */
-  public void addFilesAddedListener(FilesAddedListener listener) {
-    filesAddedListeners.addListener(listener);
-  }
-
-  /**
-   * Adds a listener to be notified of a completed file upload.
-   * 
-   * @param listener
-   *          the listener to be notified
-   */
-  public void addFileUploadedListener(FileUploadedListener listener) {
-    fileUploadedListeners.addListener(listener);
-  }
-
-  /*
-   * (non-Javadoc)
-   * 
-   * @see com.vaadin.ui.AbstractJavaScriptComponent#getState()
-   */
-  @Override
-  protected PluploadState getState() {
-    return (PluploadState) super.getState();
-  }
-
-  /**
-   * 
-   * Sets the flag which enables or disables multiple file selection when the
-   * user is browsing for files. Note that event if multiple file selection is
-   * disabled, the user may still add multiple files to the queue by selecting
-   * one after another.
-   * 
-   * @param enabled
-   *          true to enable, false to disable
-   */
-  public void setMultiSelection(boolean enabled) {
-    getState().multiSelection = enabled;
-  }
-
-  public boolean isMultiSelect() {
-    return getState().multiSelection;
-  }
-
-  /**
-   * Sets the maximum number of files that may be in the queue. If more files
-   * are added, the oldest files in the queue will be removed. This is useful
-   * for creating a single file upload component (i.e. a queue size of 1). This
-   * method is provided for convenience as the behavior can be done manually
-   * using {@link FilesAddedListener} and the {@link #removeFile(PluploadFile)}
-   * method. The default is -1 (no maximum).
-   * 
-   * @param maxQueuedFiles
-   *          greater than 0 to enabled a queue maximum
-   */
-  public void setMaxQueuedFiles(int maxQueuedFiles) {
-    this.maxQueuedFiles = maxQueuedFiles;
-  }
-
-  public int getMaxQueuedFiles() {
-    return maxQueuedFiles;
-  }
-
-  /**
-   * Returns the list of files currently queued for upload. The returned list is
-   * unmodifiable. Use the {@link #removeFile(PluploadFile)} to remove a file
-   * from the queue.
-   * 
-   * @return the list of files queued for upload
-   */
-  public List<PluploadFile> getQueuedFiles() {
-    return Collections.unmodifiableList(new ArrayList<PluploadFile>(queuedFiles
-        .values()));
-  }
-
-  /**
-   * Removes the given file from the upload queue.
-   * 
-   * @param file
-   *          the file to remove
-   */
-  public void removeFile(PluploadFile file) {
-    if (queuedFiles.containsKey(file.getId())) {
-      // Remove the file from the queued list.
-      queuedFiles.remove(file.getId());
-
-      // Add the file to the removed file list so it is cleaned up on the client
-      // side.
-      getState().removedFileIds.add(file.getId());
+    // This may be a progress event from a single chunk. We can ignore this
+    // if we know we're going to have multiple chunks. If is a single chunk,
+    // the content length may be greater than the overall content length
+    // because of the extra fields sent in the multi-part request.
+    if (this.contentLength == contentLength) {
+      // this is implemented differently than other listeners to maintain
+      // backwards compatibility
+      if (progressListeners != null) {
+        for (Upload.ProgressListener l : progressListeners) {
+          l.updateProgress(totalBytes, this.contentLength);
+        }
+      }
     }
   }
 
-  /**
-   * Enables or disables the browse button on the upload component. This method
-   * should be preferred over {@link #setEnabled(boolean)} when an upload is
-   * started or in-progress because disabling the entire upload component will
-   * halt all upload activity. Normally an upload is started and the browse
-   * button is disabled until the upload is complete to prevent the user from
-   * adding more files while the queue upload is in progress.
-   * 
-   * @param enabled
-   *          true to enable the button, false to disable
-   */
-  public void setBrowseEnabled(boolean enabled) {
-    getState().browseEnabled = enabled;
+  public StreamVariable getStreamVariable() {
+    if (streamVariable == null) {
+      streamVariable = new PluploadStreamVariable();
+    }
+
+    return streamVariable;
   }
 
-  public boolean isBrowseEnabled() {
-    return getState().browseEnabled;
+  /**
+   * Returns the runtime that was selected by the uploader after initialization
+   * on the client. This information is useful for debugging but should have
+   * little impact on functionality.
+   *
+   * @return the active runtime or null if one has not been selected
+   */
+  public String getActiveRuntime() {
+    return activeRuntime;
+  }
+
+  /**
+   * Adds the given listener for upload failed events.
+   *
+   * @param listener the listener to add
+   */
+  public void addFailedListener(FailedListener listener) {
+    addListener(FailedEvent.class, listener, FAILED_METHOD);
+  }
+
+  /**
+   * Adds the given listener for upload finished events.
+   *
+   * @param listener the listener to add
+   */
+  public void addFinishedListener(FinishedListener listener) {
+    addListener(FinishedEvent.class, listener, FINISHED_METHOD);
+  }
+
+  /**
+   * Adds the given listener for upload progress events.
+   *
+   * @param listener the listener to add
+   */
+  public void addProgressListener(Upload.ProgressListener listener) {
+    progressListeners.add(listener);
+  }
+
+  /**
+   * Adds the given listener for upload started events.
+   *
+   * @param listener the listener to add
+   */
+  public void addStartedListener(StartedListener listener) {
+    addListener(StartedEvent.class, listener, STARTED_METHOD);
+  }
+
+  /**
+   * Adds the given listener for upload succeeded events.
+   *
+   * @param listener the listener to add
+   */
+  public void addSucceededListener(SucceededListener listener) {
+    addListener(SucceededEvent.class, listener, SUCCEEDED_METHOD);
+  }
+
+  /**
+   * Removes the given listener for upload failed events.
+   *
+   * @param listener the listener to add
+   */
+  public void removeFailedListener(FailedListener listener) {
+    removeListener(FailedEvent.class, listener, FAILED_METHOD);
+  }
+
+  /**
+   * Removes the given listener for upload finished events.
+   *
+   * @param listener the listener to add
+   */
+  public void removeFinishedListener(FinishedListener listener) {
+    removeListener(FinishedEvent.class, listener, FINISHED_METHOD);
+  }
+
+  /**
+   * Removes the given listener for upload progress events.
+   *
+   * @param listener the listener to add
+   */
+  public void removeProgressListener(Upload.ProgressListener listener) {
+    progressListeners.remove(listener);
+  }
+
+  /**
+   * Removes the given listener for upload started events.
+   *
+   * @param listener the listener to add
+   */
+  public void removesStartedListener(StartedListener listener) {
+    removeListener(StartedEvent.class, listener, STARTED_METHOD);
+  }
+
+  /**
+   * Removes the given listener for upload succeeded events.
+   *
+   * @param listener the listener to add
+   */
+  public void removeSucceededListener(SucceededListener listener) {
+    removeListener(SucceededEvent.class, listener, SUCCEEDED_METHOD);
+  }
+
+  /**
+   * Emit upload received event.
+   *
+   * @param filename
+   * @param mimeType
+   */
+  protected void fireStarted(String filename, String mimeType) {
+    fireEvent(new StartedEvent(this, filename, mimeType,
+        contentLength));
+  }
+
+  protected void fireNoInputStream(String filename, String mimeType,
+      long length) {
+    fireEvent(new NoInputStreamEvent(this, filename, mimeType,
+        length));
+  }
+
+  protected void fireNoOutputStream(String filename, String mimeType,
+      long length) {
+    fireEvent(new NoOutputStreamEvent(this, filename, mimeType,
+        length));
+  }
+
+  protected void fireUploadInterrupted(String filename, String mimeType,
+      long length, Exception e) {
+    fireEvent(new FailedEvent(this, filename, mimeType, length, e));
+  }
+
+  /**
+   * Returns the caption displayed on the submit button or on the combination
+   * browse and submit button when in immediate mode.
+   *
+   * @return the caption of the submit button
+   */
+  public String getButtonCaption() {
+    return getState().buttonCaption;
+  }
+
+  /**
+   * Sets the caption displayed on the submit button or on the combination
+   * browse and submit button when in immediate mode. When not in immediate
+   * mode, the text on the browse button cannot be set.
+   *
+   * @param caption the caption of the submit button
+   */
+  public void setButtonCaption(String caption) {
+    getState().buttonCaption = caption;
+  }
+
+  public long getMaxRetries() {
+    return getState().maxRetries;
+  }
+
+  public void setMaxRetries(int maxRetries) {
+    getState().maxRetries = maxRetries;
+  }
+
+  public long getBytesRead() {
+    return bytesRead;
+  }
+
+  public Upload.Receiver getReceiver() {
+    return receiver;
   }
 
   /**
@@ -729,12 +409,313 @@ public class Plupload extends AbstractJavaScriptComponent {
    * not set, the uploaded data will be ignored. The receiver may be called
    * multiple times with different file names if there are multiple files in the
    * upload queue.
-   * 
-   * @param receiver
-   *          the receiver to use for creating file output streams
+   *
+   * @param receiver the receiver to use for creating file output streams
    */
   public void setReceiver(Upload.Receiver receiver) {
-    requestHandler.setReceiver(receiver);
+    this.receiver = receiver;
+  }
+
+  /**
+   * Sets the size in bytes of each data chunk to be sent from the client to the
+   * server. Not all runtimes support chunking. If set to null, chunking will be
+   * disabled.
+   *
+   * @param size the size of each data chunk
+   */
+  public void setChunkSize(Long size) {
+    getState().chunkSize = size;
+  }
+
+  /**
+   * Sets the maximum size in bytes of files that may be selected and uploaded.
+   *
+   * @param size the maximum file size that may be uploaded
+   */
+  public void setMaxFileSize(long size) {
+    getState().maxFileSize = size;
+  }
+
+  /**
+   * Starts the upload of any files in the upload queue. Once started, the
+   * uploads cannot be stopped until an error occurs or all the data is received
+   * (this may change in the future).
+   */
+  public void submitUpload() {
+    getState().submitUpload = true;
+  }
+
+  public long getUploadSize() {
+    return contentLength;
+  }
+
+  /**
+   * Interrupts the upload currently being received. The interruption will be
+   * done by the receiving tread so this method will return immediately and the
+   * actual interrupt will happen a bit later.
+   */
+  public void interruptUpload() {
+    if (uploading) {
+      interrupted = true;
+    }
+  }
+
+  /**
+   * Go into upload state. This is to prevent double uploading on same
+   * component.
+   *
+   * Warning: this is an internal method used by the framework and should not be
+   * used by user of the Upload component. Using it results in the Upload
+   * component going in wrong state and not working. It is currently public
+   * because it is used by another class.
+   */
+  public void startUpload() {
+    if (uploading) {
+      throw new IllegalStateException("uploading already started");
+    }
+    uploading = true;
+    getState().submitUpload = false;
+  }
+
+  /**
+   * Returns true if the component is enabled. This implementation always
+   * returns true even if the component is set to disabled. This is required
+   * because we want the ability to disable the browse/submit buttons while
+   * still allowing an upload in progress to continue. The implemention relies
+   * on RPC calls so the overall component must always be enabled or the upload
+   * complete RPC call will be dropped.
+   *
+   * @return always true
+   */
+  @Override
+  public boolean isConnectorEnabled() {
+    return true;
+  }
+
+  /**
+   * Go into state where new uploading can begin.
+   *
+   * Warning: this is an internal method used by the framework and should not be
+   * used by user of the Upload component.
+   */
+  private void endUpload() {
+    uploading = false;
+    contentLength = -1;
+    bytesRead = 0;
+    interrupted = false;
+    markAsDirty();
+  }
+
+  /**
+   * Returns true if an upload is currently in progress.
+   *
+   * @return the upload in progress
+   */
+  public boolean isUploading() {
+    return uploading;
+  }
+
+  /**
+   * Sets the comma separated list of runtimes that the uploader will attempt to
+   * use. It will try to initialize each runtime in order if one fails it will
+   * move on to the next one.
+   *
+   * @param runtimes the comma separated list of runtimes
+   */
+  public void setRuntimes(String runtimes) {
+    getState().runtimes = runtimes;
+  }
+
+  /**
+   * Sets the comma separated list of runtimes that the uploader will attempt to
+   * use.
+   *
+   * @return the comma separated list of runtimes
+   */
+  public String getRuntimes() {
+    return getState().runtimes;
+  }
+
+  @Override
+  protected PluploadState getState() {
+    return (PluploadState) super.getState();
+  }
+
+  public static class FinishedEvent extends Component.Event {
+
+    private final String filename;
+    private final String mimeType;
+    private final long length;
+
+    public FinishedEvent(Component source, String filename, String mimeType,
+        long length) {
+      super(source);
+
+      this.filename = filename;
+      this.mimeType = mimeType;
+      this.length = length;
+    }
+
+    public String getFilename() {
+      return filename;
+    }
+
+    public String getMimeType() {
+      return mimeType;
+    }
+
+    public long getLength() {
+      return length;
+    }
+
+  }
+
+  public static class NoInputStreamEvent extends FailedEvent {
+
+    public NoInputStreamEvent(Component source, String filename, String mimeType,
+        long length) {
+      super(source, filename, mimeType, length, null);
+    }
+  }
+
+  public static class NoOutputStreamEvent extends FailedEvent {
+
+    public NoOutputStreamEvent(Component source, String filename,
+        String mimeType, long length) {
+      super(source, filename, mimeType, length, null);
+    }
+  }
+
+  public interface FinishedListener {
+    void uploadFinished(FinishedEvent evt);
+  }
+
+  public static class FailedEvent extends FinishedEvent {
+    private final Exception reason;
+
+    public FailedEvent(Component source, String filename, String mimeType,
+        long length, Exception reason) {
+      super(source, filename, mimeType, length);
+      this.reason = reason;
+    }
+
+    public Exception getReason() {
+      return reason;
+    }
+
+  }
+
+  public interface FailedListener {
+    void uploadFailed(FailedEvent evt);
+  }
+
+  public static class StartedEvent extends Component.Event {
+
+    private final String filename;
+    private final String mimeType;
+    private final long contentLength;
+
+    public StartedEvent(Component source, String filename, String mimeType,
+        long contentLength) {
+      super(source);
+      this.filename = filename;
+      this.mimeType = mimeType;
+      this.contentLength = contentLength;
+    }
+
+    public String getFilename() {
+      return filename;
+    }
+
+    public String getMimeType() {
+      return mimeType;
+    }
+
+    public long getContentLength() {
+      return contentLength;
+    }
+
+
+  }
+
+  public interface StartedListener {
+    void uploadStarted(StartedEvent evt);
+  }
+
+  public static class SucceededEvent extends FinishedEvent {
+
+    public SucceededEvent(Component source, String filename, String mimeType,
+        long length) {
+      super(source, filename, mimeType, length);
+    }
+
+  }
+
+  public interface SucceededListener {
+    void uploadSucceeded(SucceededEvent evt);
+  }
+
+  private class PluploadStreamVariable implements
+      com.vaadin.server.StreamVariable {
+
+    private StreamVariable.StreamingStartEvent lastStartedEvent;
+
+    @Override
+    public boolean listenProgress() {
+      return (progressListeners != null && !progressListeners
+          .isEmpty());
+    }
+
+    @Override
+    public void onProgress(StreamVariable.StreamingProgressEvent event) {
+      fireUpdateProgress(event.getBytesReceived(),
+          event.getContentLength());
+    }
+
+    @Override
+    public boolean isInterrupted() {
+      return interrupted;
+    }
+
+    @Override
+    public OutputStream getOutputStream() {
+      OutputStream receiveUpload = receiver.receiveUpload(
+          lastStartedEvent.getFileName(),
+          lastStartedEvent.getMimeType());
+      return receiveUpload;
+    }
+
+    @Override
+    public void streamingStarted(StreamVariable.StreamingStartEvent event) {
+      lastStartedEvent = event;
+    }
+
+    @Override
+    public void streamingFinished(StreamVariable.StreamingEndEvent event) {
+          // Update the total bytes read. This is needed because this stream
+      // may only be one of many chunks.
+      bytesRead += event.getBytesReceived();
+      fireUpdateProgress(bytesRead, contentLength);
+
+      lastStartedEvent = null;
+    }
+
+    @Override
+    public void streamingFailed(StreamVariable.StreamingErrorEvent event) {
+      Exception exception = event.getException();
+      if (exception instanceof NoInputStreamException) {
+        fireNoInputStream(event.getFileName(),
+            event.getMimeType(), 0);
+      }
+      else if (exception instanceof NoOutputStreamException) {
+        fireNoOutputStream(event.getFileName(),
+            event.getMimeType(), 0);
+      }
+      else {
+        fireUploadInterrupted(event.getFileName(),
+            event.getMimeType(), 0, exception);
+      }
+    }
   }
 
 }

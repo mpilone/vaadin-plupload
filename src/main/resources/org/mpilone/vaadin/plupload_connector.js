@@ -2,7 +2,7 @@
 /*
  * The entry point into the connector from the Vaadin framework.
  */
-org_prss_contentdepot_vaadin_Plupload = function() {
+org_mpilone_vaadin_Plupload = function() {
 	
 	/*
 	 *  The root HTML element that represents this component. 
@@ -14,24 +14,21 @@ org_prss_contentdepot_vaadin_Plupload = function() {
 	 */
 	var rpcProxy = this.getRpcProxy();
 	
-	/*
-	 * Flag that indicates if the upload process has been started.
-	 */
-	var started = false;
-	
-	/*
-	 * The flag that indicates if the browse button is 
-	 * enabled or not in the uploader.
-	 */
-	var browseEnabled = true;
-	
-	/*
-	 * The upload percentage of the current file. This is used as a work around to prevent
-	 * duplicate percentage methods from going to the server because the @Delayed(lastOnly)
-	 * annotation in the server RPC doesn't appear to be working in Vaadin 7.x for JavaScript 
-	 * components. 
-	 */
-	var filePercent = 0;
+    /*
+     * The unique ID of the connector.
+     */
+    var connectorId = this.getConnectorId();
+    
+    /*
+     * The uploader currently displayed.
+     */
+	var uploader;
+    
+    /*
+     * The flag which indicates if the upload should be immidiate after 
+     * file selection.
+     */
+    var immediate = false;
 	
 	/*
 	 * Simple method for logging to the JS console if one is available.
@@ -43,34 +40,19 @@ org_prss_contentdepot_vaadin_Plupload = function() {
 	}
 	
 	/*
-	 * Clones all the fields in the Plupload File object and returns 
-	 * a new File.
-	 */
-	function cloneFile(file) {
-		var newFile = {};
-    	newFile.id = file.id;
-    	newFile.loaded = file.loaded;
-    	newFile.name = file.name;
-    	newFile.percent = file.percent;
-    	newFile.size = file.size;
-    	newFile.status = file.status;
-    	
-    	return newFile;
-	}
-	
-	/*
 	 * Builds and returns a Plupload uploader component using 
 	 * the given state information.
 	 */
 	function buildUploader(state) {
-		console_log("Building uploader.");
+		console_log("Building uploader for connector " + connectorId);
 				
 		var uploader = new plupload.Uploader({
 			runtimes: state.runtimes,
-		    browse_button : 'plupload_browse_button_' + state.instanceId,
-		    container : 'plupload_container_' + state.instanceId,
-		    max_file_size : state.maxFileSize,
+		    browse_button : 'plupload_browse_button_' + connectorId,
+		    container : 'plupload_container_' + connectorId,
+		    //max_file_size : state.maxFileSize,
 		    chunk_size: state.chunkSize,
+            max_retries: state.maxRetries,
 		    multi_selection: state.multiSelection,
 		    url: state.url + '/upload',
 		    flash_swf_url: state.url + '/flash',
@@ -78,85 +60,71 @@ org_prss_contentdepot_vaadin_Plupload = function() {
 		});
 		
 		uploader.bind('UploadFile', function(up, file) {
-			rpcProxy.onUploadFile(file);
+            console_log("Upload file: " + file.name);
+			rpcProxy.onUploadFile(file.name, file.size);
 		});
 
 		uploader.bind('Error', function(up, error) {
-//			var output = '';
-//			for (property in error) {
-//			  output += property + ': ' + error[property]+'; ';
-//			}
-//			alert(output);
-
+			var output = '';
+			for (property in error) {
+			  output += property + ': ' + error[property]+'; ';
+			}
+			console_log(output);
+            
+            error.file = null;
 			rpcProxy.onError(error);
 		});
 		
 		uploader.bind('FilesAdded', function(up, files) {
 			console_log("Files added: " + files[0].name);
-			rpcProxy.onFilesAdded(files);
+            fileInput.value = files[0].name;
+            
+            if (immediate && uploader.state === plupload.STOPPED) {
+              console_log("Starting immediately.");
+              window.setTimeout( function() { uploader.start(); }, 200);
+            }
 		});
-		
-	    uploader.bind('UploadProgress', function(up, file) {
-	    	console_log("file.percent: " + file.percent + ", filePercent: " + filePercent);
-
-	    	// We clone the file because the percent upload will continue to change in 
-	    	// the background and we don't want a race condition where it is changing 
-	    	// while sitting in the Vaadin request dispatch queue.
-	    	var newFile = cloneFile(file);
-	    	
-	    	// A hack to limit the number of server round trips 
-	    	// on duplicate percentage reporting. See the field 
-	    	// comments for more info.
-	    	var makeRpcCall = newFile.percent == 0;
-	    	makeRpcCall = makeRpcCall || newFile.percent != filePercent && newFile.percent == 100;
-	    	makeRpcCall = makeRpcCall || (newFile.percent - filePercent) > 3;
-	    	
-	    	if (makeRpcCall) {
-	    		rpcProxy.onUploadProgress(newFile);
-	    		console_log(new Date() + " - Made onUploadProgress request: " + newFile.percent);
-	    		filePercent = newFile.percent;
-	    	}
-	    });
-
+	
 	    uploader.bind('UploadComplete', function(up, files) {
 	    	console_log("Upload is complete");
-	    	rpcProxy.onUploadComplete(files);
+            
+            // Clear the queue.
+            uploader.splice(0, files.length);
 	    });
 	    
 	    uploader.bind('FileUploaded', function(up, file) {
 	    	console_log("FileUploaded: " + file.name);
-	        rpcProxy.onFileUploaded(file);
+	        rpcProxy.onFileUploaded(file.name, file.size);
 	    });
 	    
 	    uploader.bind('Init', function(up) {
 	    	console_log("Init: " + up.runtime);
-	    	rpcProxy.onInit(up.runtime);
+            rpcProxy.onInit(up.runtime);
 	    });
 
 	    uploader.bind('PostInit', function(up) {
 	    	console_log("PostInit: " + up.runtime);
-//	    	rpcProxy.onInit(up.runtime);
 	    });
 	    
 	    uploader.bind('FilesRemoved', function(up, files) {
 	    	console_log("Files removed: " + files[0].name);
-	    	rpcProxy.onFilesRemoved(files);
+            fileInput.value = "";
 	    });
 	    
-	    try {
-			uploader.init();
-			}
-			catch (ex) {
-			  console_log(ex);
-			}
+		uploader.init();
 	    
 	    return uploader;
 	}
 	
+    /*
+     * Called when the state on the server side changes. If the state 
+     * changes require a rebuild of the upload component, it will be 
+     * destroyed and recreated. All other state changes will be applied 
+     * to the existing upload instance.
+     */
 	this.onStateChange = function() {
 		
 		var state = this.getState();
-		var uploader = this.uploader;
 
 		console_log("State change!");
 		
@@ -165,77 +133,104 @@ org_prss_contentdepot_vaadin_Plupload = function() {
 		var silverlightUrl = state.url + "/silverlight";
 		
 		// Check for any state changes that require a complete rebuild of the uploader.
-		var rebuild = uploader == undefined;
-		rebuild = rebuild || uploader.settings.url != uploadUrl;
-		rebuild = rebuild || uploader.settings.flash_swf_url != flashUrl;
-		rebuild = rebuild || uploader.settings.silverlight_xap_url != silverlightUrl;
-		rebuild = rebuild || uploader.settings.runtimes != state.runtimes;
-		
+		var rebuild = uploader === undefined;
+		rebuild = rebuild || uploader.settings.url !== uploadUrl;
+		rebuild = rebuild || uploader.settings.flash_swf_url !== flashUrl;
+		rebuild = rebuild || uploader.settings.silverlight_xap_url !== silverlightUrl;
+		rebuild = rebuild || uploader.settings.runtimes !== state.runtimes;
 		
 		// If we need to rebuild, destroy the current uploader and recreate it.
 		if (rebuild) {
-			if (uploader != undefined) {
+			if (uploader !== undefined) {
 				uploader.destroy();
 			}
 			try {
-				this.uploader = buildUploader(state);
-				uploader = this.uploader;
+				uploader = buildUploader(state);
 			}
 			catch (ex) {
 				// TODO: This needs to be cleaned up!
+                console_log(ex);
 				alert(ex);
 			}
 		}
 		
 		// Apply state that doesn't require a rebuild.
 		uploader.settings.multi_selection = state.multiSelection;
-		uploader.settings.max_file_size = state.maxFileSize;
+		//uploader.settings.max_file_size = state.maxFileSize;
 		uploader.settings.chunk_size = state.chunkSize;
-		
-		// Check for file removals.
-		for (var i = 0; i < state.removedFileIds.length; ++i) {
-			var deadFile = uploader.getFile(state.removedFileIds[i]);
-			if (deadFile) {
-				uploader.removeFile(deadFile);
-			}
-		}
+        submitBtn.value = state.buttonCaption;
+        immediate = state.immediate;
+        
+        if (immediate && submitBtn.parentNode === container) {
+          // Remove the submit button and file name input.
+          container.removeChild(fileInput);
+          container.removeChild(submitBtn);
+          browseBtn.innerHTML = state.buttonCaption;
+        }
+        else if (!immediate && submitBtn.parentNode !== container) {
+          // Add the submit button and file name input.
+          container.appendChild(fileInput);
+          container.appendChild(submitBtn);
+          browseBtn.innerHTML = "Browse...";
+        }
 		
 		// Check for browse enabled.
-		if (state.browseEnabled && !browseEnabled) {
+		if (state.enabled && submitBtn.disabled) {
 			// This seems to be an undocumented feature.
 			// Refer to http://www.plupload.com/punbb/viewtopic.php?id=1450
 			uploader.trigger("DisableBrowse", false);
-			browseEnabled = true;
+			enabled = true;
 			browseBtn.className = "browse-button";
+            submitBtn.className = "submit-button";
+            submitBtn.disabled = false;
 		}
-		else if (!state.browseEnabled && browseEnabled) {
+		else if (!state.enabled && !submitBtn.disabled) {
 			uploader.trigger("DisableBrowse", true);
-			browseEnabled = false;
+			enabled = false;
 			browseBtn.className = "browse-button browse-button-disabled";
+            submitBtn.className = "submit-button submit-button-disabled";
+            submitBtn.disabled = true;
 		}
 		
+        // Refresh to make sure everything is positioned correctly.
+        uploader.refresh();
+        
 		// Check for upload start state change.
-		if (state.started && !started) {
+		if (state.submitUpload && uploader.state === plupload.STOPPED) {
 			console_log("Starting upload.");			
 			uploader.start();
 		}
-		started = state.started;
-	}
+	};
 	
 	// -----------------------
 	// Init component
     console_log("Building container.");
 	
 	var container = document.createElement("div");
-	container.setAttribute("id", "plupload_container_" + this.getState().instanceId);
+	container.setAttribute("id", "plupload_container_" + connectorId);
 	container.className = "plupload";
 	element.appendChild(container);
 	
-	var browseBtn = document.createElement("div");
-	browseBtn.setAttribute("id", "plupload_browse_button_" + this.getState().instanceId);
+    var browseBtn = document.createElement("div");
+	browseBtn.setAttribute("id", "plupload_browse_button_" + connectorId);
 	browseBtn.className = "browse-button";
+    browseBtn.innerHTML = "Browse...";
 	container.appendChild(browseBtn);
-
-	var browseBtnTxt = document.createTextNode("Browse...");
-	browseBtn.appendChild(browseBtnTxt);
-}
+    
+	var fileInput = document.createElement("input");
+	fileInput.setAttribute("id", "plupload_file_input_" + connectorId);
+	fileInput.setAttribute("type", "text");
+	fileInput.setAttribute("readonly", "true");
+	fileInput.className = "file-input";
+	container.appendChild(fileInput);
+    
+	var submitBtn = document.createElement("input");
+	submitBtn.setAttribute("id", "plupload_submit_button_" + connectorId);
+    submitBtn.setAttribute("type", "button");
+	submitBtn.className = "submit-button";
+    submitBtn.innerHTML = "Submit";
+    submitBtn.onclick = function() {
+      uploader.start();
+    };
+	container.appendChild(submitBtn);
+};

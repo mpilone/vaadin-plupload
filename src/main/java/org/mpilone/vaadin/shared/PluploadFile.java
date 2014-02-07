@@ -1,5 +1,6 @@
 package org.mpilone.vaadin.shared;
 
+@Deprecated
 public class PluploadFile {
   private String id;
   private Integer loaded;

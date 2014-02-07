@@ -1,7 +1,5 @@
 package org.mpilone.vaadin;
 
-import static java.lang.String.format;
-
 import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -15,42 +13,21 @@ import org.apache.commons.fileupload.FileItemIterator;
 import org.apache.commons.fileupload.FileItemStream;
 import org.apache.commons.fileupload.servlet.ServletFileUpload;
 import org.apache.commons.fileupload.util.Streams;
+import org.apache.commons.io.FilenameUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.vaadin.server.*;
-import com.vaadin.ui.Upload;
-import com.vaadin.ui.Upload.Receiver;
+import com.vaadin.server.communication.*;
 
 /**
  * A {@link RequestHandler} implementation which will return the Flash and
  * Silverlight component as well as handle the incoming data upload from the
  * Plupload component.
- * 
+ *
  * @author mpilone
  */
 class PluploadRequestHandler implements RequestHandler {
-
-  /**
-   * A progress listener that will be notified of percentage uploaded as
-   * incoming data is read off the stream. A listener is only useful when the
-   * runtime will post the entire file in a single request without generating
-   * progress events on the client side. For example, the html4 runtime will
-   * behave this way. If a listener is used with chunked uploading, the progress
-   * of each chunk will be reported individually which is probably not useful to
-   * consumers of the data.
-   * 
-   * @author mpilone
-   */
-  public static interface ProgressListener {
-    /**
-     * Called when the percentage uploaded changes.
-     * 
-     * @param percent
-     *          the percent of the file (or chunk) uploaded
-     */
-    public void percentChanged(int percent);
-  }
 
   /**
    * Serialization ID.
@@ -65,23 +42,7 @@ class PluploadRequestHandler implements RequestHandler {
   /**
    * The root URL for all requests that should be handled by this handler.
    */
-  private String url;
-
-  /**
-   * The upload receiver which will create output streams as files are uploaded.
-   */
-  private Upload.Receiver receiver;
-
-  /**
-   * The output stream currently being written.
-   */
-  private OutputStream receiverOutstream;
-
-  /**
-   * The optional progress listener that will be notified of data upload
-   * progress.
-   */
-  private ProgressListener progressListener;
+  private final String url;
 
   /**
    * The date format to use when generating date strings for HTTP headers.
@@ -93,22 +54,21 @@ class PluploadRequestHandler implements RequestHandler {
     HTTP_DATE_FORMAT.setTimeZone(TimeZone.getTimeZone("GMT"));
   }
 
+  private final StreamVariable streamVariable;
+
+  private static final int MAX_UPLOAD_BUFFER_SIZE = 4096;
+
   /**
    * Constructs the handler which will respond to requests to the given URL.
-   * 
-   * @param url
+   *
+   * @param url the base URL to watch for incoming requests
+   * @param streamVariable the stream variable to write to as data arrives
    */
-  public PluploadRequestHandler(String url) {
+  public PluploadRequestHandler(String url, StreamVariable streamVariable) {
     this.url = url;
+    this.streamVariable = streamVariable;
   }
 
-  /*
-   * (non-Javadoc)
-   * 
-   * @see com.vaadin.server.RequestHandler#handleRequest(com.vaadin.server.
-   * VaadinSession, com.vaadin.server.VaadinRequest,
-   * com.vaadin.server.VaadinResponse)
-   */
   @Override
   public boolean handleRequest(VaadinSession session, VaadinRequest request,
       VaadinResponse response) throws IOException {
@@ -118,7 +78,8 @@ class PluploadRequestHandler implements RequestHandler {
 
     String requestPath = servletRequest.getContextPath()
         + servletRequest.getServletPath() + servletRequest.getPathInfo();
-    log.info("Got request for " + requestPath);
+    log.info("Handler {} got request for {}", System.identityHashCode(this),
+        requestPath);
 
     if (requestPath.equals(url + "/upload")) {
       handleUploadRequest(session, request, response);
@@ -140,30 +101,29 @@ class PluploadRequestHandler implements RequestHandler {
   /**
    * Handles the request for the Silverlight upload component and writes the
    * component binary to the response.
-   * 
-   * @param session
-   *          the HTTP session
-   * @param request
-   *          the HTTP request
-   * @param response
-   *          the HTTP response
+   *
+   * @param session the HTTP session
+   * @param request the HTTP request
+   * @param response the HTTP response
+   *
    * @throws IOException
    */
   private void handleSilverlightRequest(VaadinSession session,
       VaadinRequest request, VaadinResponse response) throws IOException {
     log.debug("Returning silverlight upload component.");
 
-    InputStream instream = getClass().getResourceAsStream(
-        "plupload/plupload.silverlight.swf");
-    byte[] data = readAll(instream);
-    instream.close();
+    byte[] data;
+    try (InputStream instream =
+        getClass().getResourceAsStream("plupload/Moxie.xap")) {
+      data = readAll(instream);
+    }
 
-    OutputStream outstream = response.getOutputStream();
-    response.setContentType("application/x-silverlight-app");
-    response.setStatus(HttpServletResponse.SC_OK);
-    response.setHeader("Content-Length", String.valueOf(data.length));
-    outstream.write(data);
-    outstream.close();
+    try (OutputStream outstream = response.getOutputStream()) {
+      response.setContentType("application/x-silverlight-app");
+      response.setStatus(HttpServletResponse.SC_OK);
+      response.setHeader("Content-Length", String.valueOf(data.length));
+      outstream.write(data);
+    }
 
     log.debug("Wrote silverlight upload component: " + data.length);
   }
@@ -171,30 +131,28 @@ class PluploadRequestHandler implements RequestHandler {
   /**
    * Handles the request for the Flash upload component and writes the component
    * binary to the response.
-   * 
-   * @param session
-   *          the HTTP session
-   * @param request
-   *          the HTTP request
-   * @param response
-   *          the HTTP response
+   *
+   * @param session the HTTP session
+   * @param request the HTTP request
+   * @param response the HTTP response
+   *
    * @throws IOException
    */
   private void handleFlashRequest(VaadinSession session, VaadinRequest request,
       VaadinResponse response) throws IOException {
     log.debug("Returning flash upload component.");
 
-    InputStream instream = getClass().getResourceAsStream(
-        "plupload/plupload.flash.swf");
-    byte[] data = readAll(instream);
-    instream.close();
-
-    OutputStream outstream = response.getOutputStream();
-    response.setContentType("application/x-shockwave-flash");
-    response.setStatus(HttpServletResponse.SC_OK);
-    response.setHeader("Content-Length", String.valueOf(data.length));
-    outstream.write(data);
-    outstream.close();
+    byte[] data;
+    try (InputStream instream =
+        getClass().getResourceAsStream("plupload/Moxie.swf")) {
+      data = readAll(instream);
+    }
+    try (OutputStream outstream = response.getOutputStream()) {
+      response.setContentType("application/x-shockwave-flash");
+      response.setStatus(HttpServletResponse.SC_OK);
+      response.setHeader("Content-Length", String.valueOf(data.length));
+      outstream.write(data);
+    }
 
     log.debug("Wrote flash upload component: " + data.length);
   }
@@ -203,13 +161,11 @@ class PluploadRequestHandler implements RequestHandler {
    * Handles the data upload request. The data will be read from the request and
    * an OK response written. All data read will be immediately written to the
    * output stream returned by the .
-   * 
-   * @param session
-   *          the HTTP session
-   * @param request
-   *          the HTTP request
-   * @param response
-   *          the HTTP response
+   *
+   * @param session the HTTP session
+   * @param request the HTTP request
+   * @param response the HTTP response
+   *
    * @throws IOException
    */
   private void handleUploadRequest(VaadinSession session,
@@ -231,7 +187,7 @@ class PluploadRequestHandler implements RequestHandler {
         .isMultipartContent((VaadinServletRequest) request);
 
     if (isMultipart) {
-      handleMultipartUploadRequest(request, response);
+      handleMultipartUploadRequest(session, request, response);
     }
     else {
       log.info("Not a multipart request! Not sure what to do with it yet.");
@@ -244,15 +200,15 @@ class PluploadRequestHandler implements RequestHandler {
     response.getOutputStream().write("DONE".getBytes());
   }
 
-  private void handleMultipartUploadRequest(VaadinRequest request,
-      VaadinResponse response) {
+  private void handleMultipartUploadRequest(VaadinSession session,
+      VaadinRequest request, VaadinResponse response) {
     // Create a new file upload handler
     ServletFileUpload upload = new ServletFileUpload();
 
     try {
       // Default to a single chunk in the event that chunking isn't enabled.
       int chunk = 0;
-      // int chunks = 0;
+      int chunks = 1;
       String fileName = null;
 
       String headerValue = request.getHeader("Content-Length");
@@ -267,28 +223,34 @@ class PluploadRequestHandler implements RequestHandler {
         FileItemStream item = iter.next();
         String name = item.getFieldName();
         InputStream instream = item.openStream();
-        String contentType = item.getContentType();
 
         if (item.isFormField()) {
-          if (name.equals("chunk")) {
-            chunk = Integer.valueOf(Streams.asString(instream));
+          switch (name) {
+            case "chunk":
+              chunk = Integer.valueOf(Streams.asString(instream));
+              break;
+            case "chunks":
+              chunks = Integer.valueOf(Streams.asString(instream));
+              break;
+            case "name":
+              fileName = Streams.asString(instream);
+              if (fileName != null) {
+                fileName = FilenameUtils.getName(fileName);
+              }
+              break;
+            default:
+              // ignore
+              break;
           }
-          if (name.equals("name")) {
-            fileName = Streams.asString(instream);
-          }
-          // if (name.equals("chunks")) {
-          // chunks = Integer.valueOf(Streams.asString(stream));
-          // }
         }
         else {
-          log.debug("File field " + name + " with file name " + item.getName()
-              + " detected.");
+          log.debug("File field {} with file name {} detected.", name, item.
+              getName());
 
-          OutputStream outstream = getOutputStream(fileName, contentType, chunk);
-          copyStream(instream, outstream, contentLength, progressListener);
+          streamToReceiver(session, instream, streamVariable, fileName,
+              item.getContentType(), contentLength, chunk, chunks);
         }
       }
-
     }
     catch (Exception ex) {
       log.error("File upload failed.", ex);
@@ -297,103 +259,233 @@ class PluploadRequestHandler implements RequestHandler {
   }
 
   /**
-   * Copies the input stream to the output stream and updates the progress
-   * listener if possible.
-   * 
-   * @param instream
-   *          the input stream to read
-   * @param outstream
-   *          the output stream to write
+   * @param in
+   * @param streamVariable
+   * @param filename
+   * @param type
    * @param contentLength
-   *          the total content length (may be more than the raw data on the
-   *          input stream)
-   * @param listener
-   *          the listener to notify when the percent read changes
-   * @throws IOException
+   *
+   * @return true if the streamvariable has informed that the terminal can
+   * forget this variable
+   * @throws UploadException
    */
-  private void copyStream(InputStream instream, OutputStream outstream,
-      int contentLength, ProgressListener listener) throws IOException {
+  protected final boolean streamToReceiver(VaadinSession session,
+      final InputStream in, StreamVariable streamVariable,
+      String filename, String type, int contentLength, int chunk, int chunks)
+      throws UploadException {
 
-    byte[] buf = new byte[2048];
-    int read = 0;
-    int totalRead = 0;
-    int percent = 0;
+    if (streamVariable == null) {
+      throw new IllegalStateException("StreamVariable for the post not found");
+    }
 
-    // log.debug(format(
-    // "Copying upload stream with content length [%d] and notifying listener [%s].",
-    // contentLength, listener));
+    OutputStream out = null;
+    int totalBytes = 0;
+    StreamingStartEventImpl startedEvent = new StreamingStartEventImpl(
+        filename, type, contentLength);
+    try {
+      boolean listenProgress;
+      session.lock();
+      try {
+        streamVariable.streamingStarted(startedEvent);
+        out = streamVariable.getOutputStream();
+        listenProgress = streamVariable.listenProgress();
+      }
+      finally {
+        session.unlock();
+      }
 
-    while ((read = instream.read(buf)) != -1) {
-      outstream.write(buf, 0, read);
-      totalRead += read;
+      // Gets the output target stream
+      if (out == null) {
+        throw new NoOutputStreamException();
+      }
 
-      // Update the progress information if needed.
-      if (contentLength > 0 && listener != null) {
-        int newPercent = (int) ((totalRead / (float) contentLength) * 100);
+      if (in == null) {
+        // No file, for instance non-existent filename in html upload
+        throw new NoInputStreamException();
+      }
 
-        // If the percent complete changed, execute the callback with the
-        // change.
-        if (newPercent != percent) {
-          percent = newPercent;
-          listener.percentChanged(percent);
+      log.info("Handler {} streaming content to stream variable {}",
+          System.identityHashCode(this),
+          System.identityHashCode(streamVariable));
+
+      final byte buffer[] = new byte[MAX_UPLOAD_BUFFER_SIZE];
+      int bytesReadToBuffer;
+
+      while ((bytesReadToBuffer = in.read(buffer)) > 0) {
+        out.write(buffer, 0, bytesReadToBuffer);
+        totalBytes += bytesReadToBuffer;
+
+        if (listenProgress) {
+          // Update progress if listener set and contentLength received
+          session.lock();
+          try {
+            StreamingProgressEventImpl progressEvent =
+                new StreamingProgressEventImpl(filename, type, contentLength,
+                    totalBytes);
+            streamVariable.onProgress(progressEvent);
+          }
+          finally {
+            session.unlock();
+          }
+        }
+        if (streamVariable.isInterrupted()) {
+          throw new FileUploadHandler.UploadInterruptedException();
         }
       }
-    }
 
-    outstream.flush();
-  }
-
-  /**
-   * Returns the output stream for the given file. Normally this method
-   * delegates to the receiver set with {@link #setReceiver(Receiver)} but if no
-   * receiver has been set, an output stream that writes to /dev/null will be
-   * returned. This method can safely be called multiple times for different
-   * chunks but only the first chunk will create a new output stream and all
-   * other chunks will reuse the existing stream.
-   * 
-   * @param fileName
-   *          the name of the file being uploaded (if known)
-   * @param contentType
-   *          the content type of the file being uploaded (if known)
-   * @param chunk
-   *          the chunk number (0 based)
-   * @return the output stream to which to write the incoming data
-   */
-  private OutputStream getOutputStream(String fileName, String contentType,
-      int chunk) {
-
-    log.debug(format("Getting output stream for chunk %d in file %s.", chunk,
-        fileName));
-
-    // If this is the first chunk and we have a receiver, create a new output
-    // stream.
-    if (chunk == 0 && receiver != null) {
-      receiverOutstream = receiver.receiveUpload(fileName, contentType);
-    }
-
-    // If we don't have a receiver, write to/dev/null.
-    if (receiverOutstream == null) {
-      log.warn(format("Incoming file data but no receiver has "
-          + "been set for chunk [%d] in file [%s]. Incoming data "
-          + "will be ignored.", chunk, fileName));
-
-      receiverOutstream = new OutputStream() {
-        @Override
-        public void write(int b) throws IOException {
-          // send to /dev/null
+      // upload successful
+      out.flush();
+      StreamVariable.StreamingEndEvent event = new StreamingEndEventImpl(
+          filename, type, totalBytes);
+        session.lock();
+        try {
+          streamVariable.streamingFinished(event);
         }
-      };
+        finally {
+          session.unlock();
+        }
     }
+    catch (FileUploadHandler.UploadInterruptedException e) {
+      // Download interrupted by application code
+//      tryToCloseStream(out);
+      StreamVariable.StreamingErrorEvent event = new StreamingErrorEventImpl(
+          filename, type, contentLength, totalBytes, e);
 
-    return receiverOutstream;
+      session.lock();
+      try {
+        streamVariable.streamingFailed(event);
+      }
+      finally {
+        session.unlock();
+      }
+      // Note, we are not throwing interrupted exception forward as it is
+      // not a terminal level error like all other exception.
+    }
+    catch (final Exception e) {
+//      tryToCloseStream(out);
+      session.lock();
+      try {
+        StreamVariable.StreamingErrorEvent event = new StreamingErrorEventImpl(
+            filename, type, contentLength, totalBytes, e);
+        streamVariable.streamingFailed(event);
+        // throw exception for terminal to be handled (to be passed to
+        // terminalErrorHandler)
+        throw new UploadException(e);
+      }
+      finally {
+        session.unlock();
+      }
+    }
+    return startedEvent.isDisposed();
   }
 
+  private static void tryToCloseStream(OutputStream out) {
+    try {
+      // try to close output stream (e.g. file handle)
+      if (out != null) {
+        out.close();
+      }
+    }
+    catch (IOException e1) {
+      // NOP
+    }
+  }
+
+//  /**
+//   * Copies the input stream to the output stream and updates the progress
+//   * listener if possible.
+//   *
+//   * @param instream
+//   *          the input stream to read
+//   * @param outstream
+//   *          the output stream to write
+//   * @param contentLength
+//   *          the total content length (may be more than the raw data on the
+//   *          input stream)
+//   * @throws IOException
+//   */
+//  private void copyStream(InputStream instream, OutputStream outstream,
+//      int contentLength) throws IOException {
+//
+//    byte[] buf = new byte[2048];
+//    int read;
+//    int totalRead = 0;
+//    int percent = 0;
+//
+//    // log.debug(format(
+//    // "Copying upload stream with content length [%d] and notifying listener [%s].",
+//    // contentLength, listener));
+//
+//    while ((read = instream.read(buf)) != -1) {
+//      outstream.write(buf, 0, read);
+//      totalRead += read;
+//
+//      // Update the progress information if needed.
+//      if (contentLength > 0 && listener != null) {
+//        int newPercent = (int) ((totalRead / (float) contentLength) * 100);
+//
+//        // If the percent complete changed, execute the callback with the
+//        // change.
+//        if (newPercent != percent) {
+//          percent = newPercent;
+//          listener.percentChanged(percent);
+//        }
+//      }
+//    }
+//
+//    outstream.flush();
+//  }
+//  /**
+//   * Returns the output stream for the given file. Normally this method
+//   * delegates to the receiver set with {@link #setReceiver(Receiver)} but if no
+//   * receiver has been set, an output stream that writes to /dev/null will be
+//   * returned. This method can safely be called multiple times for different
+//   * chunks but only the first chunk will create a new output stream and all
+//   * other chunks will reuse the existing stream.
+//   *
+//   * @param fileName
+//   *          the name of the file being uploaded (if known)
+//   * @param contentType
+//   *          the content type of the file being uploaded (if known)
+//   * @param chunk
+//   *          the chunk number (0 based)
+//   * @return the output stream to which to write the incoming data
+//   */
+//  private OutputStream getOutputStream(String fileName, String contentType,
+//      int chunk) {
+//
+//    log.debug(format("Getting output stream for chunk %d in file %s.", chunk,
+//        fileName));
+//
+//    // If this is the first chunk and we have a receiver, create a new output
+//    // stream.
+//    if (chunk == 0 && streamVariable != null) {
+//
+//      receiverOutstream = streamVariable.getOutputStream();
+//    }
+//
+//    // If we don't have a receiver, write to/dev/null.
+//    if (receiverOutstream == null) {
+//      log.warn(format("Incoming file data but no receiver has "
+//          + "been set for chunk [%d] in file [%s]. Incoming data "
+//          + "will be ignored.", chunk, fileName));
+//
+//      receiverOutstream = new OutputStream() {
+//        @Override
+//        public void write(int b) throws IOException {
+//          // send to /dev/null
+//        }
+//      };
+//    }
+//
+//    return receiverOutstream;
+//  }
   /**
    * Reads all of the data available from the given input stream and returns it
    * as a block of bytes.
-   * 
-   * @param instream
-   *          the input stream from which to read
+   *
+   * @param instream the input stream from which to read
+   *
    * @return the data read or an empty array if no data was read
    * @throws IOException
    */
@@ -407,25 +499,118 @@ class PluploadRequestHandler implements RequestHandler {
     outstream.close();
     return outstream.toByteArray();
   }
+//
+//  /**
+//   * The receiver to use to create output streams for incoming data.
+//   *
+//   * @param receiver
+//   *          the receiver to use to create output streams
+//   */
+//  public void setReceiver(Receiver receiver) {
+//    this.receiver = receiver;
+//  }
+//
+//  /**
+//   * Sets the listener to be notified when the percent uploaded changes during a
+//   * data request.
+//   *
+//   * @param progressListener
+//   *          the progress listener
+//   */
+//  public void setProgressListener(ProgressListener progressListener) {
+//    this.progressListener = progressListener;
+//  }
 
-  /**
-   * The receiver to use to create output streams for incoming data.
-   * 
-   * @param receiver
-   *          the receiver to use to create output streams
-   */
-  public void setReceiver(Receiver receiver) {
-    this.receiver = receiver;
+  public static class StreamEventImpl implements StreamVariable.StreamingEvent {
+
+    private final String fileName;
+    private final String mimeType;
+    private final long contentLength;
+    private final long bytesReceived;
+
+    public StreamEventImpl(String fileName, String mimeType, long contentLength,
+        long bytesReceived) {
+      this.fileName = fileName;
+      this.mimeType = mimeType;
+      this.contentLength = contentLength;
+      this.bytesReceived = bytesReceived;
+    }
+
+    @Override
+    public String getFileName() {
+      return this.fileName;
+    }
+
+    @Override
+    public String getMimeType() {
+      return this.mimeType;
+    }
+
+    @Override
+    public long getContentLength() {
+      return this.contentLength;
+    }
+
+    @Override
+    public long getBytesReceived() {
+      return this.bytesReceived;
+    }
+
   }
 
-  /**
-   * Sets the listener to be notified when the percent uploaded changes during a
-   * data request.
-   * 
-   * @param progressListener
-   *          the progress listener
-   */
-  public void setProgressListener(ProgressListener progressListener) {
-    this.progressListener = progressListener;
+  public static class StreamingStartEventImpl extends StreamEventImpl implements
+      StreamVariable.StreamingStartEvent {
+    private boolean disposed;
+
+    private StreamingStartEventImpl(String filename, String type,
+        int contentLength) {
+      super(filename, type, contentLength, 0);
+    }
+
+    @Override
+    public void disposeStreamVariable() {
+      this.disposed = true;
+    }
+
+    private boolean isDisposed() {
+      return this.disposed;
+    }
+
+  }
+
+  public static class StreamingEndEventImpl extends StreamEventImpl implements
+      StreamVariable.StreamingEndEvent {
+
+    private StreamingEndEventImpl(String filename, String type, int totalBytes) {
+      super(filename, type, totalBytes, totalBytes);
+    }
+
+  }
+
+  public static class StreamingProgressEventImpl extends StreamEventImpl
+      implements StreamVariable.StreamingProgressEvent {
+
+    private StreamingProgressEventImpl(String filename, String type,
+        int contentLength, int totalBytes) {
+      super(filename, type, contentLength, totalBytes);
+    }
+
+  }
+
+  public static class StreamingErrorEventImpl extends StreamEventImpl
+      implements StreamVariable.StreamingErrorEvent {
+    private Exception exception;
+
+    private StreamingErrorEventImpl(String filename, String type,
+        int contentLength, int totalBytes, Exception e) {
+      super(filename, type, contentLength, totalBytes);
+      this.exception = e;
+    }
+
+    @Override
+    public Exception getException() {
+      return this.exception;
+    }
+
   }
 }

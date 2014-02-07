@@ -1,36 +1,22 @@
 package org.mpilone.vaadin.shared;
 
-import java.util.List;
-
 import org.mpilone.vaadin.Plupload;
 
 import com.vaadin.shared.ui.JavaScriptComponentState;
 
 /**
  * Shared state for the {@link Plupload} component.
- * 
+  *
  * @author mpilone
  */
 @SuppressWarnings("serial")
 public class PluploadState extends JavaScriptComponentState {
 
   /**
-   * The flag which indicates if the uploader has started uploading the file
-   * queue.
+   * The flag which indicates if the uploader should submit the selected upload
+   * if it isn't already uploading.
    */
-  public boolean started = false;
-
-  /**
-   * The flag which indicates if the browse button is enabled or not.
-   */
-  public boolean browseEnabled = true;
-
-  /**
-   * The unique ID for this instance of the uploader. This is used to create
-   * unique elements in the DOM to support multiple upload components on a
-   * single page.
-   */
-  public long instanceId;
+  public boolean submitUpload = false;
 
   /**
    * Page URL to where the files will be uploaded to.
@@ -65,16 +51,21 @@ public class PluploadState extends JavaScriptComponentState {
   public boolean uniqueNames;
 
   /**
-   * The IDs of files that have been removed from the upload queue on the server
-   * side.
-   */
-  public List<String> removedFileIds;
-
-  /**
    * The flag which enables or disables multiple file selection when the user is
    * browsing for files. Note that event if multiple file selection is disabled,
    * the user may still add multiple files to the queue by selecting one after
    * another.
    */
   public boolean multiSelection;
+
+  /**
+   * The maximum number of times to retry a failed upload or chunk.
+   */
+  public int maxRetries;
+
+  /**
+   * The text displayed on the button that initiates the upload.
+   */
+  public String buttonCaption;
+
 }
