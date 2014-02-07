@@ -4,6 +4,11 @@
  */
 org_mpilone_vaadin_Plupload = function() {
 	
+    var BROWSE_BUTTON_CAPTION = "Choose File";
+    var BUTTON_CLASSNAME = "v-button v-widget";
+    var BROWSE_BUTTON_CLASSNAME = "plupload-browse " + BUTTON_CLASSNAME;
+    var SUBMIT_BUTTON_CLASSNAME = "plupload-submit " + BUTTON_CLASSNAME;
+    
 	/*
 	 *  The root HTML element that represents this component. 
 	 */
@@ -157,38 +162,38 @@ org_mpilone_vaadin_Plupload = function() {
 		uploader.settings.multi_selection = state.multiSelection;
 		//uploader.settings.max_file_size = state.maxFileSize;
 		uploader.settings.chunk_size = state.chunkSize;
-        submitBtn.value = state.buttonCaption;
+        submitBtn.caption.innerHTML = state.buttonCaption;
         immediate = state.immediate;
         
-        if (immediate && submitBtn.parentNode === container) {
+        if (immediate && submitBtn.root.parentNode === container) {
           // Remove the submit button and file name input.
           container.removeChild(fileInput);
-          container.removeChild(submitBtn);
-          browseBtn.innerHTML = state.buttonCaption;
+          container.removeChild(submitBtn.root);
+          browseBtn.caption.innerHTML = state.buttonCaption;
         }
-        else if (!immediate && submitBtn.parentNode !== container) {
+        else if (!immediate && submitBtn.root.parentNode !== container) {
           // Add the submit button and file name input.
           container.appendChild(fileInput);
-          container.appendChild(submitBtn);
-          browseBtn.innerHTML = "Browse...";
+          container.appendChild(submitBtn.root);
+          browseBtn.caption.innerHTML = BROWSE_BUTTON_CAPTION;
         }
 		
 		// Check for browse enabled.
-		if (state.enabled && submitBtn.disabled) {
+		if (state.enabled && submitBtn.root.disabled) {
 			// This seems to be an undocumented feature.
 			// Refer to http://www.plupload.com/punbb/viewtopic.php?id=1450
 			uploader.trigger("DisableBrowse", false);
 			enabled = true;
-			browseBtn.className = "browse-button";
-            submitBtn.className = "submit-button";
-            submitBtn.disabled = false;
+			browseBtn.root.className = BROWSE_BUTTON_CLASSNAME;
+            submitBtn.root.className = SUBMIT_BUTTON_CLASSNAME;
+            submitBtn.root.disabled = false;
 		}
-		else if (!state.enabled && !submitBtn.disabled) {
+		else if (!state.enabled && !submitBtn.root.disabled) {
 			uploader.trigger("DisableBrowse", true);
 			enabled = false;
-			browseBtn.className = "browse-button browse-button-disabled";
-            submitBtn.className = "submit-button submit-button-disabled";
-            submitBtn.disabled = true;
+			browseBtn.root.className = BROWSE_BUTTON_CLASSNAME + " v-disabled";
+            submitBtn.root.className = SUBMIT_BUTTON_CLASSNAME + " v-disabled";
+            submitBtn.root.disabled = true;
 		}
 		
         // Refresh to make sure everything is positioned correctly.
@@ -200,36 +205,56 @@ org_mpilone_vaadin_Plupload = function() {
 			uploader.start();
 		}
 	};
-	
+
+    function createPseudoVaadinButton() {
+      
+      var btn = document.createElement("div");
+	btn.setAttribute("role", "button");
+	btn.className = BUTTON_CLASSNAME;
+    
+    var btnWrap = document.createElement("span");
+    btnWrap.className = "v-button-wrap";
+    btn.appendChild(btnWrap);
+    
+    var btnCaption = document.createElement("span");
+    btnCaption.className = "v-button-caption";
+    btnCaption.innerHTML = "Button";
+    btnWrap.appendChild(btnCaption);
+      
+      return {
+        root: btn,
+        wrap: btnWrap,
+        caption: btnCaption
+      };
+      
+    }
+  
 	// -----------------------
 	// Init component
     console_log("Building container.");
-	
+    
 	var container = document.createElement("div");
 	container.setAttribute("id", "plupload_container_" + connectorId);
 	container.className = "plupload";
 	element.appendChild(container);
 	
-    var browseBtn = document.createElement("div");
-	browseBtn.setAttribute("id", "plupload_browse_button_" + connectorId);
-	browseBtn.className = "browse-button";
-    browseBtn.innerHTML = "Browse...";
-	container.appendChild(browseBtn);
+    var browseBtn = createPseudoVaadinButton();
+    browseBtn.root.setAttribute("id", "plupload_browse_button_" + connectorId);
+	browseBtn.root.className = BROWSE_BUTTON_CLASSNAME;
+    browseBtn.caption.innerHTML = "Choose File";
+    container.appendChild(browseBtn.root);
     
 	var fileInput = document.createElement("input");
-	fileInput.setAttribute("id", "plupload_file_input_" + connectorId);
 	fileInput.setAttribute("type", "text");
 	fileInput.setAttribute("readonly", "true");
-	fileInput.className = "file-input";
+	fileInput.className = "plupload-file v-textfield v-widget v-textfield-prompt v-readonly v-textfield-readonly";
 	container.appendChild(fileInput);
     
-	var submitBtn = document.createElement("input");
-	submitBtn.setAttribute("id", "plupload_submit_button_" + connectorId);
-    submitBtn.setAttribute("type", "button");
-	submitBtn.className = "submit-button";
-    submitBtn.innerHTML = "Submit";
-    submitBtn.onclick = function() {
+	var submitBtn = createPseudoVaadinButton();
+	submitBtn.root.className = SUBMIT_BUTTON_CLASSNAME;
+    submitBtn.caption.innerHTML = "Submit";
+    submitBtn.root.onclick = function() {
       uploader.start();
     };
-	container.appendChild(submitBtn);
+	container.appendChild(submitBtn.root);
 };
