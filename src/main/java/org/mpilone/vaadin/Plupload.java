@@ -1,4 +1,3 @@
-
 package org.mpilone.vaadin;
 
 import java.io.Closeable;
@@ -80,18 +79,18 @@ public class Plupload extends AbstractJavaScriptComponent {
     public void onError(PluploadError error) {
       log.debug("onError: [" + error.getCode() + "] " + error.getMessage());
 
-      fireUploadInterrupted(null, mimeType, contentLength, new RuntimeException(
-          error.
-          getMessage()));
+      fireUploadInterrupted(filename, mimeType, contentLength,
+          new RuntimeException(error.getMessage()));
       endUpload();
     }
 
     @Override
     public void onUploadFile(String filename, long contentLength) {
-      log.info("Started upload of file {} with length {} to plupload {}",
-          filename, contentLength, System.identityHashCode(this));
+      log.info("Started upload of file {} with length {}.",
+          filename, contentLength);
 
       Plupload.this.contentLength = contentLength;
+      Plupload.this.filename = filename;
 
       startUpload();
       fireStarted(filename, null);
@@ -120,7 +119,6 @@ public class Plupload extends AbstractJavaScriptComponent {
    * well as handle the incoming data upload from the Plupload_orig component.
    */
   //private PluploadRequestHandler requestHandler;
-
   private boolean interrupted;
 
   private StreamVariable streamVariable;
@@ -128,6 +126,8 @@ public class Plupload extends AbstractJavaScriptComponent {
   private Upload.Receiver receiver;
 
   private long contentLength;
+
+  private String filename;
 
   private String mimeType;
 
@@ -141,20 +141,30 @@ public class Plupload extends AbstractJavaScriptComponent {
   private boolean uploading;
 
   /**
-   * Constructs the upload component. A unique ID will be generated for the ID
-   * as well as a request handler registered to handle incoming data. The
-   * request handler will listen at
-   * /[contextPath]/[servletPath]/plupload/[uniqueID]. The following defaults
-   * will be used:
+   * Constructs the upload component.
+   *
+   * @see #Plupload(java.lang.String, com.vaadin.ui.Upload.Receiver)
+   */
+  public Plupload() {
+    this(null, null);
+  }
+
+  /**
+   * Constructs the upload component. The following defaults will be used:
    * <ul>
    * <li>runtimes: html5,flash,silverlight,html4</li>
    * <li>chunkSize: null</li>
    * <li>maxFileSize: 10MB</li>
    * <li>multiSelection: false</li>
    * </ul>
+   *
+   * @param caption the caption of the component
+   * @param receiver the receiver to create the output stream to receive upload
+   * data
    */
-  public Plupload() {
+  public Plupload(String caption, Upload.Receiver receiver) {
     registerRpc(rpc);
+    setCaption(caption);
 
     // Add the Silverlight mime-type if it isn't already in the resolver.
     if (FileTypeResolver.DEFAULT_MIME_TYPE.equals(FileTypeResolver.getMIMEType(
@@ -171,6 +181,7 @@ public class Plupload extends AbstractJavaScriptComponent {
     setChunkSize(null);
     setMaxFileSize(10 * 1024 * 1024L);
     getState().multiSelection = false;
+    setReceiver(receiver);
   }
 
   @Override
@@ -215,8 +226,6 @@ public class Plupload extends AbstractJavaScriptComponent {
    *
    */
   protected void fireUpdateProgress(long totalBytes, long contentLength) {
-
-    //log.info("Firing progress on plupload {}", System.identityHashCode(this));
 
     // This may be a progress event from a single chunk. We can ignore this
     // if we know we're going to have multiple chunks. If is a single chunk,
@@ -329,7 +338,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    *
    * @param listener the listener to add
    */
-  public void removesStartedListener(StartedListener listener) {
+  public void removeStartedListener(StartedListener listener) {
     removeListener(StartedEvent.class, listener, STARTED_METHOD);
   }
 
@@ -506,6 +515,8 @@ public class Plupload extends AbstractJavaScriptComponent {
     uploading = false;
     contentLength = -1;
     bytesRead = 0;
+    filename = null;
+    mimeType = null;
     interrupted = false;
     markAsDirty();
   }
@@ -591,10 +602,12 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   public interface FinishedListener {
+
     void uploadFinished(FinishedEvent evt);
   }
 
   public static class FailedEvent extends FinishedEvent {
+
     private final Exception reason;
 
     public FailedEvent(Component source, String filename, String mimeType,
@@ -610,6 +623,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   public interface FailedListener {
+
     void uploadFailed(FailedEvent evt);
   }
 
@@ -639,10 +653,10 @@ public class Plupload extends AbstractJavaScriptComponent {
       return contentLength;
     }
 
-
   }
 
   public interface StartedListener {
+
     void uploadStarted(StartedEvent evt);
   }
 
@@ -656,13 +670,13 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   public interface SucceededListener {
+
     void uploadSucceeded(SucceededEvent evt);
   }
 
   private class PluploadStreamVariable implements
       com.vaadin.server.StreamVariable {
 
-    private StreamVariable.StreamingStartEvent lastStartedEvent;
     private OutputStream outstream;
 
     @Override
@@ -685,9 +699,8 @@ public class Plupload extends AbstractJavaScriptComponent {
     @Override
     public OutputStream getOutputStream() {
       if (outstream == null) {
-        outstream = receiver.receiveUpload(
-            lastStartedEvent.getFileName(),
-            lastStartedEvent.getMimeType());
+        outstream = receiver.receiveUpload(Plupload.this.filename,
+            Plupload.this.mimeType);
       }
 
       // We don't want to permit closing of the output stream because
@@ -698,23 +711,28 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void streamingStarted(StreamVariable.StreamingStartEvent event) {
-      lastStartedEvent = event;
+      if (Plupload.this.mimeType == null) {
+        Plupload.this.mimeType = event.getMimeType();
+      }
+      if (Plupload.this.filename == null) {
+        // Try to use the file name from the upload started RPC call which
+        // will be correct. Otherwise fall back to the stream started event
+        // even though it will most likely contain "blob".
+        Plupload.this.filename = event.getFileName();
+      }
     }
 
     @Override
     public void streamingFinished(StreamVariable.StreamingEndEvent event) {
-          // Update the total bytes read. This is needed because this stream
+      // Update the total bytes read. This is needed because this stream
       // may only be one of many chunks.
       bytesRead += event.getBytesReceived();
       fireUpdateProgress(bytesRead, contentLength);
 
       if (bytesRead == contentLength) {
         // This is the last chunk. Cleanup.
-
         outstream = null;
       }
-
-      lastStartedEvent = null;
     }
 
     @Override

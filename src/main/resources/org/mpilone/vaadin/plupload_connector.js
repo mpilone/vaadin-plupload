@@ -179,21 +179,17 @@ org_mpilone_vaadin_Plupload = function() {
         }
 		
 		// Check for browse enabled.
-		if (state.enabled && submitBtn.root.disabled) {
-			// This seems to be an undocumented feature.
-			// Refer to http://www.plupload.com/punbb/viewtopic.php?id=1450
-			uploader.trigger("DisableBrowse", false);
-			enabled = true;
+		if (state.enabled && submitBtn.disabled) {
+			uploader.disableBrowse(false);
 			browseBtn.root.className = BROWSE_BUTTON_CLASSNAME;
             submitBtn.root.className = SUBMIT_BUTTON_CLASSNAME;
-            submitBtn.root.disabled = false;
+            submitBtn.disabled = false;
 		}
-		else if (!state.enabled && !submitBtn.root.disabled) {
-			uploader.trigger("DisableBrowse", true);
-			enabled = false;
+		else if (!state.enabled && !submitBtn.disabled) {
+			uploader.disableBrowse(true);
 			browseBtn.root.className = BROWSE_BUTTON_CLASSNAME + " v-disabled";
             submitBtn.root.className = SUBMIT_BUTTON_CLASSNAME + " v-disabled";
-            submitBtn.root.disabled = true;
+            submitBtn.disabled = true;
 		}
 		
         // Refresh to make sure everything is positioned correctly.
@@ -256,5 +252,6 @@ org_mpilone_vaadin_Plupload = function() {
     submitBtn.root.onclick = function() {
       uploader.start();
     };
+    submitBtn.disabled = false;
 	container.appendChild(submitBtn.root);
 };
