@@ -110,7 +110,7 @@ public class Plupload extends AbstractJavaScriptComponent {
     public void onInit(String runtime) {
       log.info("Uploader initialized with runtime {}", runtime);
 
-      activeRuntime = runtime;
+      Plupload.this.activeRuntime = Runtime.valueOf(runtime.toUpperCase());
     }
   };
 
@@ -133,7 +133,7 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   private long bytesRead;
 
-  private String activeRuntime;
+  private Runtime activeRuntime;
 
   private final List<Upload.ProgressListener> progressListeners =
       new ArrayList<>();
@@ -152,7 +152,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   /**
    * Constructs the upload component. The following defaults will be used:
    * <ul>
-   * <li>runtimes: html5,flash,silverlight,html4</li>
+   * <li>activeRuntimes: html5,flash,silverlight,html4</li>
    * <li>chunkSize: null</li>
    * <li>maxFileSize: 10MB</li>
    * <li>multiSelection: false</li>
@@ -177,7 +177,7 @@ public class Plupload extends AbstractJavaScriptComponent {
     setResource("silverlightSwfUrl", new ClassResource(getClass(),
         "plupload/Moxie.xap"));
 
-    setRuntimes("html5,flash,silverlight,html4");
+    setRuntimes(Runtime.HTML5, Runtime.FLASH, Runtime.SILVERLIGHT, Runtime.HTML4);
     setChunkSize(null);
     setMaxFileSize(10 * 1024 * 1024L);
     getState().multiSelection = false;
@@ -248,17 +248,6 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
 
     return streamVariable;
-  }
-
-  /**
-   * Returns the runtime that was selected by the uploader after initialization
-   * on the client. This information is useful for debugging but should have
-   * little impact on functionality.
-   *
-   * @return the active runtime or null if one has not been selected
-   */
-  public String getActiveRuntime() {
-    return activeRuntime;
   }
 
   /**
@@ -359,7 +348,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   protected void fireStarted(String filename, String mimeType) {
     fireEvent(new StartedEvent(this, filename, mimeType,
-        contentLength));
+        contentLength, activeRuntime));
   }
 
   protected void fireNoInputStream(String filename, String mimeType,
@@ -431,8 +420,8 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   /**
    * Sets the size in bytes of each data chunk to be sent from the client to the
-   * server. Not all runtimes support chunking. If set to null, chunking will be
-   * disabled.
+   * server. Not all activeRuntimes support chunking. If set to null, chunking
+   * will be disabled.
    *
    * @param size the size of each data chunk
    */
@@ -531,24 +520,43 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * Sets the comma separated list of runtimes that the uploader will attempt to
-   * use. It will try to initialize each runtime in order if one fails it will
-   * move on to the next one.
+   * Sets the list of runtimes that the uploader will attempt to use. It will
+   * try to initialize each runtime in order if one fails it will move on to the
+   * next one.
    *
-   * @param runtimes the comma separated list of runtimes
+   * @param runtimes the list of runtimes
    */
-  public void setRuntimes(String runtimes) {
-    getState().runtimes = runtimes;
+  public void setRuntimes(Runtime... runtimes) {
+    String value = "";
+
+    for (Runtime runtime : runtimes) {
+      if (!value.isEmpty()) {
+        value += ",";
+      }
+      value += runtime.name().toLowerCase();
+    }
+
+    getState().runtimes = value;
   }
 
   /**
-   * Sets the comma separated list of runtimes that the uploader will attempt to
-   * use.
+   * Returns the list of runtimes that the uploader will attempt to use.
    *
-   * @return the comma separated list of runtimes
+   * @return the list of activeRuntimes
    */
-  public String getRuntimes() {
-    return getState().runtimes;
+  public Runtime[] getRuntimes() {
+    String[] runtimes = new String[0];
+    if (getState().runtimes != null) {
+      runtimes = getState().runtimes.split(",");
+    }
+
+    int i = 0;
+    Runtime[] values = new Runtime[runtimes.length];
+    for (String runtime : runtimes) {
+      values[i++] = Runtime.valueOf(runtime.toUpperCase());
+    }
+
+    return values;
   }
 
   @Override
@@ -632,13 +640,26 @@ public class Plupload extends AbstractJavaScriptComponent {
     private final String filename;
     private final String mimeType;
     private final long contentLength;
+    private final Runtime runtime;
 
     public StartedEvent(Component source, String filename, String mimeType,
-        long contentLength) {
+        long contentLength, Runtime runtime) {
       super(source);
       this.filename = filename;
       this.mimeType = mimeType;
       this.contentLength = contentLength;
+      this.runtime = runtime;
+    }
+
+    /**
+     * Returns the activeRuntime that was selected by the uploader after
+     * initialization on the client. This information is useful for debugging
+     * but should have little impact on functionality.
+     *
+     * @return the active activeRuntime or null if one has not been selected
+     */
+    public Runtime getRuntime() {
+      return runtime;
     }
 
     public String getFilename() {
@@ -792,6 +813,17 @@ public class Plupload extends AbstractJavaScriptComponent {
     public void close() throws IOException {
       delegate.flush();
     }
+  }
+
+  /**
+   * The available client side activeRuntimes.
+   */
+  public enum Runtime {
+
+    HTML4,
+    FLASH,
+    SILVERLIGHT,
+    HTML5
   }
 
 }
