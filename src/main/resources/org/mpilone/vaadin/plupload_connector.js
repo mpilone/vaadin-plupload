@@ -65,7 +65,12 @@ org_mpilone_vaadin_Plupload = function() {
 		});
 		
 		uploader.bind('UploadFile', function(up, file) {
-            console_log("Upload file: " + file.name);
+            console_log("Upload file: " + file.name + " with size " + file.size);
+            
+            // It appears that size may be null for HTML4 upload in IE8.
+            if (!file.size) {
+              file.size = -1;
+            }
 			rpcProxy.onUploadFile(file.name, file.size);
 		});
 

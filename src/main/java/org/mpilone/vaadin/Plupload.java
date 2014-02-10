@@ -66,57 +66,8 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
   }
 
-  /**
-   * The remote procedure call interface which allows calls from the client side
-   * to the server. For the most part these methods map to the events generated
-   * by the Plupload_orig JavaScript component.
-   */
-  private final PluploadServerRpc rpc = new PluploadServerRpc() {
 
-    /**
-     * Serialization ID.
-     */
-    private static final long serialVersionUID = 1L;
-
-    @Override
-    public void onError(PluploadError error) {
-      log.debug("onError: [" + error.getCode() + "] " + error.getMessage());
-
-      fireUploadInterrupted(filename, mimeType, contentLength,
-          new RuntimeException(error.getMessage()));
-      endUpload();
-    }
-
-    @Override
-    public void onUploadFile(String filename, long contentLength) {
-      log.info("Started upload of file {} with length {}.",
-          filename, contentLength);
-
-      Plupload.this.contentLength = contentLength;
-      Plupload.this.filename = filename;
-
-      startUpload();
-      fireStarted(filename, null);
-    }
-
-    @Override
-    public void onFileUploaded(String filename, long contentLength) {
-      log.info("Completed upload of file " + filename + " with length "
-          + contentLength);
-
-      fireUploadSuccess(filename, mimeType, contentLength);
-      endUpload();
-      markAsDirty();
-    }
-
-    @Override
-    public void onInit(String runtime) {
-      log.info("Uploader initialized with runtime {}", runtime);
-
-      Plupload.this.activeRuntime = Runtime.valueOf(runtime.toUpperCase());
-    }
-  };
-
+  private final PluploadServerRpc rpc = new PluploadServerRpcImpl();
   private boolean interrupted;
   private StreamVariable streamVariable;
   private Upload.Receiver receiver;
@@ -237,7 +188,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   public StreamVariable getStreamVariable() {
     if (streamVariable == null) {
-      streamVariable = new PluploadStreamVariable();
+      streamVariable = new StreamVariableImpl();
     }
 
     return streamVariable;
@@ -872,10 +823,65 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
+   * The remote procedure call interface which allows calls from the client side
+   * to the server. For the most part these methods map to the events generated
+   * by the Plupload_orig JavaScript component.
+   */
+  private class PluploadServerRpcImpl implements PluploadServerRpc {
+
+    /**
+     * Serialization ID.
+     */
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    public void onError(PluploadError error) {
+      log.debug("onError: [" + error.getCode() + "] " + error.getMessage());
+
+      fireUploadInterrupted(filename, mimeType, contentLength,
+          new RuntimeException(error.getMessage()));
+      endUpload();
+    }
+
+    @Override
+    public void onUploadFile(String filename, long contentLength) {
+      log.info("Started upload of file {} with length {}.",
+          filename, contentLength);
+
+      if (contentLength != -1) {
+        Plupload.this.contentLength = contentLength;
+      }
+      Plupload.this.filename = filename;
+
+      startUpload();
+      fireStarted(filename, null);
+    }
+
+    @Override
+    public void onFileUploaded(String filename, long contentLength) {
+      log.info("Completed upload of file " + filename + " with length "
+          + contentLength);
+
+      // Use bytesRead rather than the given contentLength because it is
+      // unreliable. For example, HTML4 on IE8 will always send null/-1.
+      fireUploadSuccess(filename, mimeType, bytesRead);
+      endUpload();
+      markAsDirty();
+    }
+
+    @Override
+    public void onInit(String runtime) {
+      log.info("Uploader initialized with runtime {}", runtime);
+
+      Plupload.this.activeRuntime = Runtime.valueOf(runtime.toUpperCase());
+    }
+  }
+
+  /**
    * The stream variable that maps the stream events to the upload component and
    * the configured data receiver.
    */
-  private class PluploadStreamVariable implements
+  private class StreamVariableImpl implements
       com.vaadin.server.StreamVariable {
 
     private OutputStream outstream;
@@ -912,14 +918,24 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void streamingStarted(StreamVariable.StreamingStartEvent event) {
-      if (Plupload.this.mimeType == null) {
+
+      Plupload that = Plupload.this;
+
+      if (that.mimeType == null) {
         Plupload.this.mimeType = event.getMimeType();
       }
-      if (Plupload.this.filename == null) {
+      if (that.filename == null) {
         // Try to use the file name from the upload started RPC call which
         // will be correct. Otherwise fall back to the stream started event
         // even though it will most likely contain "blob".
-        Plupload.this.filename = event.getFileName();
+        that.filename = event.getFileName();
+      }
+      if (that.contentLength < event.getContentLength()) {
+        // Try to use the file name from the upload started RPC call which
+        // will be correct (except for HTML4/IE8). Otherwise fall back to the
+        // stream started event even though it may contain the size of just
+        // a single blob.
+        that.contentLength = event.getContentLength();
       }
     }
 
