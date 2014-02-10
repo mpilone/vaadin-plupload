@@ -16,6 +16,7 @@
     that is extremely similar to the standard Vaadin Upload component so it
     should require relatively few changes to swap between the implementations.
   </description>
+  
   <build>
     <plugins>
       <plugin>
@@ -47,10 +48,8 @@
       <artifactId>slf4j-api</artifactId>
       <version>1.7.6</version>
     </dependency>
-    
 
     <!-- Runtime -->
-   
 
     <!-- Provided -->
     <dependency>
@@ -60,4 +59,23 @@
       <scope>provided</scope>
     </dependency>
   </dependencies>
+  
+  <distributionManagement>
+    <!-- Use 
+      -DaltDeploymentRepository=mpilone-snapshots::default::file:///Users/.../mvn-repo/snapshots 
+      when deploying locally.
+      
+      Refer to http://cemerick.com/2010/08/24/hosting-maven-repos-on-github/
+    -->
+    <repository>
+      <id>mpilone-releases</id>
+      <name>GitHub MVN Repository Releases</name>
+      <url>https://github.com/mpilone/mvn-repo/raw/master/releases</url>
+    </repository>
+    <snapshotRepository>
+      <id>mpilone-snapshots</id>
+      <name>GitHub MVN Repository Snapshots</name>
+      <url>https://github.com/mpilone/mvn-repo/raw/master/snapshots</url>
+    </snapshotRepository>
+  </distributionManagement>
 </project>

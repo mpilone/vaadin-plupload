@@ -22,10 +22,13 @@ import com.vaadin.util.FileTypeResolver;
 
 /**
  * Wrapper for the Plupload HTML5/Flash/HTML4 upload component. You can find
- * more information at http://www.plupload.com/.
- *
- * TODO: this class needs to be documented and requires some more functionality
- * (such as more listeners and file removal support).
+ * more information at http://www.plupload.com/. The implementation attempts to
+ * follow the {@link Upload} API as much as possible to be a drop-in
+ * replacement. The Plupload component announces the start of an upload via RPC
+ * which means it is possible that the data could begin arriving at the Receiver
+ * before the uploadStarted event is fired. Also, the filename passed to the
+ * Receiver during output stream creation may be inaccurate as Plupload labels
+ * chunks with a filename of "blob".
  *
  * @author mpilone
  */
@@ -114,30 +117,16 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
   };
 
-  /**
-   * The request handler which can return the Flash and Silverlight component as
-   * well as handle the incoming data upload from the Plupload_orig component.
-   */
-  //private PluploadRequestHandler requestHandler;
   private boolean interrupted;
-
   private StreamVariable streamVariable;
-
   private Upload.Receiver receiver;
-
   private long contentLength;
-
   private String filename;
-
   private String mimeType;
-
   private long bytesRead;
-
   private Runtime activeRuntime;
-
   private final List<Upload.ProgressListener> progressListeners =
       new ArrayList<>();
-
   private boolean uploading;
 
   /**
@@ -152,7 +141,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   /**
    * Constructs the upload component. The following defaults will be used:
    * <ul>
-   * <li>activeRuntimes: html5,flash,silverlight,html4</li>
+   * <li>runtimes: html5,flash,silverlight,html4</li>
    * <li>chunkSize: null</li>
    * <li>maxFileSize: 10MB</li>
    * <li>multiSelection: false</li>
@@ -206,12 +195,11 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * Emits the upload success event.
+   * Fires the upload success event to all registered listeners.
    *
-   * @param filename
-   * @param mimeType
-   * @param length
-   *
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
+   * @param length the length/size of the file received
    */
   protected void fireUploadSuccess(String filename, String mimeType,
       long length) {
@@ -219,7 +207,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * Emits the progress event.
+   * Fires the the progress event to all registered listeners.
    *
    * @param totalBytes bytes received so far
    * @param contentLength actual size of the file being uploaded, if known
@@ -242,6 +230,11 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
   }
 
+  /**
+   * Returns the stream variable that will receive the data events and content.
+   *
+   * @return the stream variable for this component
+   */
   public StreamVariable getStreamVariable() {
     if (streamVariable == null) {
       streamVariable = new PluploadStreamVariable();
@@ -341,28 +334,50 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * Emit upload received event.
+   * Fires the upload started event to all registered listeners.
    *
-   * @param filename
-   * @param mimeType
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
    */
   protected void fireStarted(String filename, String mimeType) {
     fireEvent(new StartedEvent(this, filename, mimeType,
         contentLength, activeRuntime));
   }
 
+  /**
+   * Fires the no input stream error event to all registered listeners.
+   *
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
+   * @param length the length/size of the file received
+   */
   protected void fireNoInputStream(String filename, String mimeType,
       long length) {
     fireEvent(new NoInputStreamEvent(this, filename, mimeType,
         length));
   }
 
+  /**
+   * Fires the no output stream error event to all registered listeners.
+   *
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
+   * @param length the length/size of the file received
+   */
   protected void fireNoOutputStream(String filename, String mimeType,
       long length) {
     fireEvent(new NoOutputStreamEvent(this, filename, mimeType,
         length));
   }
 
+  /**
+   * Fires the upload interrupted error event to all registered listeners.
+   *
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
+   * @param length the length/size of the file received
+   * @param e the root exception
+   */
   protected void fireUploadInterrupted(String filename, String mimeType,
       long length, Exception e) {
     fireEvent(new FailedEvent(this, filename, mimeType, length, e));
@@ -389,18 +404,40 @@ public class Plupload extends AbstractJavaScriptComponent {
     getState().buttonCaption = caption;
   }
 
+  /**
+   * Returns the maximum number of retries if an upload fails.
+   *
+   * @return the number of retries
+   */
   public long getMaxRetries() {
     return getState().maxRetries;
   }
 
+  /**
+   * Sets the maximum number of retries if an upload fails.
+   *
+   * @param maxRetries the number of retries
+   */
   public void setMaxRetries(int maxRetries) {
     getState().maxRetries = maxRetries;
   }
 
+  /**
+   * Returns the number of bytes read since the upload started. This value is
+   * cleared after a successful upload.
+   *
+   * @return the number of bytes read
+   */
   public long getBytesRead() {
     return bytesRead;
   }
 
+  /**
+   * Returns the receiver that will be used to create output streams when a file
+   * starts uploading.
+   *
+   * @return the receiver for all incoming data
+   */
   public Upload.Receiver getReceiver() {
     return receiver;
   }
@@ -447,6 +484,12 @@ public class Plupload extends AbstractJavaScriptComponent {
     getState().submitUpload = true;
   }
 
+  /**
+   * Returns the size (i.e. reported content length) of the current upload. This
+   * value may not be known and will be cleared after a successful upload.
+   *
+   * @return the upload size in bytes
+   */
   public long getUploadSize() {
     return contentLength;
   }
@@ -564,12 +607,23 @@ public class Plupload extends AbstractJavaScriptComponent {
     return (PluploadState) super.getState();
   }
 
+  /**
+   * The event fired when an upload completes, both success or failure.
+   */
   public static class FinishedEvent extends Component.Event {
 
     private final String filename;
     private final String mimeType;
     private final long length;
 
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     */
     public FinishedEvent(Component source, String filename, String mimeType,
         long length) {
       super(source);
@@ -579,62 +633,134 @@ public class Plupload extends AbstractJavaScriptComponent {
       this.length = length;
     }
 
+    /**
+     * Returns the file name.
+     *
+     * @return the file name
+     */
     public String getFilename() {
       return filename;
     }
 
+    /**
+     * Returns the mime-type.
+     *
+     * @return the mime-type
+     */
     public String getMimeType() {
       return mimeType;
     }
 
+    /**
+     * Returns the content length in bytes.
+     *
+     * @return the length in bytes
+     */
     public long getLength() {
       return length;
     }
 
   }
 
+  /**
+   * A failed event describing no input stream available for reading.
+   */
   public static class NoInputStreamEvent extends FailedEvent {
 
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     */
     public NoInputStreamEvent(Component source, String filename, String mimeType,
         long length) {
       super(source, filename, mimeType, length, null);
     }
   }
 
+  /**
+   * A failed event describing no output stream available for reading.
+   */
   public static class NoOutputStreamEvent extends FailedEvent {
 
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     */
     public NoOutputStreamEvent(Component source, String filename,
         String mimeType, long length) {
       super(source, filename, mimeType, length, null);
     }
   }
 
+  /**
+   * A listener for finished events.
+   */
   public interface FinishedListener {
 
+    /**
+     * Called when an upload finishes, either success or failure.
+     *
+     * @param evt the event describing the completion
+     */
     void uploadFinished(FinishedEvent evt);
   }
 
+  /**
+   * An event describing an upload failure.
+   */
   public static class FailedEvent extends FinishedEvent {
 
     private final Exception reason;
 
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     * @param reason the root cause exception
+     */
     public FailedEvent(Component source, String filename, String mimeType,
         long length, Exception reason) {
       super(source, filename, mimeType, length);
       this.reason = reason;
     }
 
+    /**
+     * Returns the root cause exception if available.
+     *
+     * @return the root exception
+     */
     public Exception getReason() {
       return reason;
     }
-
   }
 
+  /**
+   * A listener for failed events.
+   */
   public interface FailedListener {
 
+    /**
+     * Called when an upload fails.
+     *
+     * @param evt the event details
+     */
     void uploadFailed(FailedEvent evt);
   }
 
+  /**
+   * An event describing the start of an upload.
+   */
   public static class StartedEvent extends Component.Event {
 
     private final String filename;
@@ -642,6 +768,15 @@ public class Plupload extends AbstractJavaScriptComponent {
     private final long contentLength;
     private final Runtime runtime;
 
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param contentLength the content length in bytes provided by the client
+     * @param runtime the runtime selected on the client
+     */
     public StartedEvent(Component source, String filename, String mimeType,
         long contentLength, Runtime runtime) {
       super(source);
@@ -652,37 +787,70 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
 
     /**
-     * Returns the activeRuntime that was selected by the uploader after
+     * Returns the runtime that was selected by the uploader after
      * initialization on the client. This information is useful for debugging
      * but should have little impact on functionality.
      *
-     * @return the active activeRuntime or null if one has not been selected
+     * @return the active runtime or null if one has not been selected
      */
     public Runtime getRuntime() {
       return runtime;
     }
 
+    /**
+     * The file name provided by the client.
+     *
+     * @return the file name
+     */
     public String getFilename() {
       return filename;
     }
 
+    /**
+     * The mime-type provided by the client.
+     *
+     * @return the mime-type
+     */
     public String getMimeType() {
       return mimeType;
     }
 
+    /**
+     * The content length in bytes provided by the client.
+     *
+     * @return the content length
+     */
     public long getContentLength() {
       return contentLength;
     }
-
   }
 
+  /**
+   * A listener that receives started events.
+   */
   public interface StartedListener {
 
+    /**
+     * Called when the upload is started.
+     *
+     * @param evt the event details
+     */
     void uploadStarted(StartedEvent evt);
   }
 
+  /**
+   * An event describing a successful upload.
+   */
   public static class SucceededEvent extends FinishedEvent {
 
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     */
     public SucceededEvent(Component source, String filename, String mimeType,
         long length) {
       super(source, filename, mimeType, length);
@@ -690,11 +858,23 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   }
 
+  /**
+   * A listener that receives upload success events.
+   */
   public interface SucceededListener {
 
+    /**
+     * Called when an upload is successful.
+     *
+     * @param evt the event details
+     */
     void uploadSucceeded(SucceededEvent evt);
   }
 
+  /**
+   * The stream variable that maps the stream events to the upload component and
+   * the configured data receiver.
+   */
   private class PluploadStreamVariable implements
       com.vaadin.server.StreamVariable {
 
@@ -776,6 +956,11 @@ public class Plupload extends AbstractJavaScriptComponent {
       endUpload();
     }
 
+    /**
+     * Attempts to close the given stream, ignoring exceptions.
+     *
+     * @param closeable the stream to be closed
+     */
     private void tryClose(Closeable closeable) {
       try {
         closeable.close();
@@ -786,10 +971,18 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
   }
 
+  /**
+   * An output stream that ignores close calls.
+   */
   private static class UncloseableOutputStream extends OutputStream {
 
-    private OutputStream delegate;
+    private final OutputStream delegate;
 
+    /**
+     * Constructs the stream.
+     *
+     * @param delegate the delegate stream to write to
+     */
     public UncloseableOutputStream(OutputStream delegate) {
       this.delegate = delegate;
     }
@@ -816,7 +1009,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * The available client side activeRuntimes.
+   * The available client side runtimes.
    */
   public enum Runtime {
 

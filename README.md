@@ -22,5 +22,10 @@ should require relatively few changes to swap between the implementations.
   event is fired
 * The filename passed to the Receiver during output stream creation may be 
   inaccurate as Plupload labels chunks with a filename of "blob"
+
+## Future Enhancements
+* Better support for retries by not closing/flushing the input stream until the
+  chunk is successful
+* Support the maximum file size detection on the client side
   
 This is a work in progress and it has not been thoroughly tested.
