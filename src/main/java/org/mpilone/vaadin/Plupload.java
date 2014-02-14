@@ -1,8 +1,6 @@
 package org.mpilone.vaadin;
 
-import java.io.Closeable;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,20 +13,31 @@ import org.slf4j.LoggerFactory;
 
 import com.vaadin.annotations.JavaScript;
 import com.vaadin.server.*;
+import com.vaadin.server.communication.FileUploadHandler;
 import com.vaadin.ui.AbstractJavaScriptComponent;
 import com.vaadin.ui.Component;
 import com.vaadin.ui.Upload;
 import com.vaadin.util.FileTypeResolver;
 
 /**
+ * <p>
  * Wrapper for the Plupload HTML5/Flash/HTML4 upload component. You can find
- * more information at http://www.plupload.com/. The implementation attempts to
+ * more information at http://www.plupload.com/. This implementation attempts to
  * follow the {@link Upload} API as much as possible to be a drop-in
- * replacement. The Plupload component announces the start of an upload via RPC
- * which means it is possible that the data could begin arriving at the Receiver
- * before the uploadStarted event is fired. Also, the filename passed to the
- * Receiver during output stream creation may be inaccurate as Plupload labels
- * chunks with a filename of "blob".
+ * replacement.
+ * </p>
+ * <p>
+ * The Plupload component announces the start of an upload via RPC which means
+ * it is possible that the data could begin arriving at the Receiver before the
+ * uploadStarted event is fired. Also, the filename passed to the Receiver
+ * during output stream creation may be inaccurate as Plupload labels chunks
+ * with a filename of "blob".
+ * </p>
+ * <p>
+ * When using retries, the incoming data must be buffered in order to reset the
+ * input stream in the event of a partial upload. Therefore it is recommend that
+ * only small files be supported or chunking is used to limit the file size.
+ * </p>
  *
  * @author mpilone
  */
@@ -66,7 +75,6 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
   }
 
-
   private final PluploadServerRpc rpc = new PluploadServerRpcImpl();
   private boolean interrupted;
   private StreamVariable streamVariable;
@@ -75,7 +83,8 @@ public class Plupload extends AbstractJavaScriptComponent {
   private String filename;
   private String mimeType;
   private long bytesRead;
-  private Runtime activeRuntime;
+  private Runtime runtime;
+  private int maxRetryBufferSize = 0;
   private final List<Upload.ProgressListener> progressListeners =
       new ArrayList<>();
   private boolean uploading;
@@ -118,7 +127,6 @@ public class Plupload extends AbstractJavaScriptComponent {
         "plupload/Moxie.xap"));
 
     setRuntimes(Runtime.HTML5, Runtime.FLASH, Runtime.SILVERLIGHT, Runtime.HTML4);
-    setChunkSize(null);
     setMaxFileSize(10 * 1024 * 1024L);
     getState().multiSelection = false;
     setReceiver(receiver);
@@ -128,6 +136,8 @@ public class Plupload extends AbstractJavaScriptComponent {
   public void attach() {
     super.attach();
 
+    // Get the URL for the stream variable which will also register
+    // it in the connector tracker.
     String url = getSession().getCommunicationManager().
         getStreamVariableTargetUrl(this, "plupload", getStreamVariable());
 
@@ -292,7 +302,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   protected void fireStarted(String filename, String mimeType) {
     fireEvent(new StartedEvent(this, filename, mimeType,
-        contentLength, activeRuntime));
+        contentLength, runtime));
   }
 
   /**
@@ -408,13 +418,37 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   /**
    * Sets the size in bytes of each data chunk to be sent from the client to the
-   * server. Not all activeRuntimes support chunking. If set to null, chunking
-   * will be disabled.
+   * server. Not all runtimes support chunking. If set to 0, chunking will be
+   * disabled.
    *
    * @param size the size of each data chunk
    */
-  public void setChunkSize(Long size) {
+  public void setChunkSize(int size) {
     getState().chunkSize = size;
+  }
+
+  /**
+   * Sets the size in bytes of each data chunk to be sent from the client to the
+   * server.
+   *
+   * @return the size of each data chunk
+   */
+  public int getChunkSize() {
+    return getState().chunkSize;
+  }
+
+  /**
+   * Sets the size of the memory buffer used when retries are enabled. Incoming
+   * data is first written to the buffer and committed to the receiver only when
+   * the upload (or chunk) successfully completes. This allows the data to be
+   * abandoned in the event of a partial upload and failure. This value should
+   * always be equal to or greater than the chunk size or the buffer will not be
+   * used.
+   *
+   * @param maxRetryBufferSize the buffer size in bytes
+   */
+  public void setMaxRetryBufferSize(int maxRetryBufferSize) {
+    this.maxRetryBufferSize = maxRetryBufferSize;
   }
 
   /**
@@ -453,6 +487,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   public void interruptUpload() {
     if (uploading) {
       interrupted = true;
+      getState().interruptUpload = true;
     }
   }
 
@@ -501,6 +536,7 @@ public class Plupload extends AbstractJavaScriptComponent {
     filename = null;
     mimeType = null;
     interrupted = false;
+    getState().interruptUpload = false;
     markAsDirty();
   }
 
@@ -536,7 +572,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   /**
    * Returns the list of runtimes that the uploader will attempt to use.
    *
-   * @return the list of activeRuntimes
+   * @return the list of runtimes
    */
   public Runtime[] getRuntimes() {
     String[] runtimes = new String[0];
@@ -836,7 +872,8 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void onError(PluploadError error) {
-      log.debug("onError: [" + error.getCode() + "] " + error.getMessage());
+      log.info("Error on upload: [{}] {}", error.getCode(),
+          error.getMessage());
 
       fireUploadInterrupted(filename, mimeType, contentLength,
           new RuntimeException(error.getMessage()));
@@ -859,8 +896,8 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void onFileUploaded(String filename, long contentLength) {
-      log.info("Completed upload of file " + filename + " with length "
-          + contentLength);
+      log.info("Completed upload of file {} with length {}.", filename,
+          contentLength);
 
       // Use bytesRead rather than the given contentLength because it is
       // unreliable. For example, HTML4 on IE8 will always send null/-1.
@@ -873,7 +910,7 @@ public class Plupload extends AbstractJavaScriptComponent {
     public void onInit(String runtime) {
       log.info("Uploader initialized with runtime {}", runtime);
 
-      Plupload.this.activeRuntime = Runtime.valueOf(runtime.toUpperCase());
+      Plupload.this.runtime = Runtime.valueOf(runtime.toUpperCase());
     }
   }
 
@@ -885,6 +922,8 @@ public class Plupload extends AbstractJavaScriptComponent {
       com.vaadin.server.StreamVariable {
 
     private OutputStream outstream;
+    private TransactionalOutputStream txOutstream;
+    private long chunkContentLength;
 
     @Override
     public boolean listenProgress() {
@@ -910,11 +949,39 @@ public class Plupload extends AbstractJavaScriptComponent {
             Plupload.this.mimeType);
       }
 
+      // If retries are configured we need to write all incoming input into a
+      // buffer so we can throw it away in the event of a failure.
+      boolean retryEnabled = getState().maxRetries > 0 && maxRetryBufferSize > 0;
+
+      if (retryEnabled && chunkContentLength <= maxRetryBufferSize) {
+        if (txOutstream == null) {
+          log.info("Constructing new retry buffer with capacity {}.",
+              maxRetryBufferSize);
+          txOutstream = new TransactionalOutputStream(maxRetryBufferSize,
+              outstream);
+        }
+
+        txOutstream.rollback();
+      }
+      else if (retryEnabled) {
+          log.warn("Retries are enabled but the content length {} is larger "
+              + "than the maximum data buffer of {}. Duplicate data may be "
+              + "written to the receiver in the event of a partial upload and "
+            + "retry. Configure chunking to avoid this warning.", contentLength,
+            maxRetryBufferSize);
+
+        txOutstream = null;
+      }
+      else {
+        txOutstream = null;
+      }
+
       // We don't want to permit closing of the output stream because
       // we may have a chunked upload that we need to write to the
       // same output stream.
-      return new UncloseableOutputStream(outstream);
-    }
+      return txOutstream != null ? txOutstream :
+          new UncloseableOutputStream(outstream);
+      }
 
     @Override
     public void streamingStarted(StreamVariable.StreamingStartEvent event) {
@@ -937,10 +1004,17 @@ public class Plupload extends AbstractJavaScriptComponent {
         // a single blob.
         that.contentLength = event.getContentLength();
       }
+
+      chunkContentLength = event.getContentLength();
     }
 
     @Override
     public void streamingFinished(StreamVariable.StreamingEndEvent event) {
+      // Flush the retry stream if we are supporting retries.
+      if (txOutstream != null) {
+        tryCommit(txOutstream);
+      }
+
       // Update the total bytes read. This is needed because this stream
       // may only be one of many chunks.
       bytesRead += event.getBytesReceived();
@@ -955,25 +1029,48 @@ public class Plupload extends AbstractJavaScriptComponent {
     @Override
     public void streamingFailed(StreamVariable.StreamingErrorEvent event) {
       Exception exception = event.getException();
+      boolean terminal = false;
+
       if (exception instanceof NoInputStreamException) {
         fireNoInputStream(event.getFileName(),
             event.getMimeType(), 0);
+        terminal = true;
       }
       else if (exception instanceof NoOutputStreamException) {
         fireNoOutputStream(event.getFileName(),
             event.getMimeType(), 0);
+        terminal = true;
       }
-      else {
+      else if (exception instanceof FileUploadHandler.UploadInterruptedException) {
         fireUploadInterrupted(event.getFileName(),
             event.getMimeType(), 0, exception);
+        terminal = true;
       }
-      tryClose(outstream);
-      outstream = null;
-      endUpload();
+
+      // Only end the upload if we're not going to retry.
+      if (terminal || txOutstream == null) {
+        tryClose(outstream);
+        outstream = null;
+        endUpload();
+      }
     }
 
     /**
-     * Attempts to close the given stream, ignoring exceptions.
+     * Attempts to commit the given output stream ignoring IO exceptions.
+     *
+     * @param outstream the stream to commit
+     */
+    private void tryCommit(TransactionalOutputStream outstream) {
+      try {
+        outstream.commit();
+      }
+      catch (IOException ex) {
+        // Ignore
+      }
+    }
+
+    /**
+     * Attempts to close the given stream, ignoring IO exceptions.
      *
      * @param closeable the stream to be closed
      */
@@ -988,47 +1085,9 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
-   * An output stream that ignores close calls.
-   */
-  private static class UncloseableOutputStream extends OutputStream {
-
-    private final OutputStream delegate;
-
-    /**
-     * Constructs the stream.
-     *
-     * @param delegate the delegate stream to write to
-     */
-    public UncloseableOutputStream(OutputStream delegate) {
-      this.delegate = delegate;
-    }
-
-    @Override
-    public void write(byte[] b) throws IOException {
-      delegate.write(b);
-    }
-
-    @Override
-    public void write(int b) throws IOException {
-      delegate.write(b);
-    }
-
-    @Override
-    public void write(byte[] b, int off, int len) throws IOException {
-      delegate.write(b, off, len);
-    }
-
-    @Override
-    public void close() throws IOException {
-      delegate.flush();
-    }
-  }
-
-  /**
    * The available client side runtimes.
    */
   public enum Runtime {
-
     HTML4,
     FLASH,
     SILVERLIGHT,

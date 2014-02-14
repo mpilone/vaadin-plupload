@@ -205,6 +205,12 @@ org_mpilone_vaadin_Plupload = function() {
 			console_log("Starting upload.");			
 			uploader.start();
 		}
+        
+		// Check for upload stop state change.
+		if (state.interruptUpload && uploader.state === plupload.STARTED) {
+			console_log("Aborting upload.");			
+			uploader.stop();
+		}
 	};
 
     function createPseudoVaadinButton() {
