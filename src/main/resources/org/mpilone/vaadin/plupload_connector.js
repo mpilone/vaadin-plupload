@@ -34,6 +34,8 @@ org_mpilone_vaadin_Plupload = function() {
      * file selection.
      */
     var immediate = false;
+    
+    var progressPercent = 0;
 	
 	/*
 	 * Simple method for logging to the JS console if one is available.
@@ -66,6 +68,8 @@ org_mpilone_vaadin_Plupload = function() {
 		
 		uploader.bind('UploadFile', function(up, file) {
             console_log("Upload file: " + file.name + " with size " + file.size);
+            
+            progressPercent = 0;
             
             // It appears that size may be null for HTML4 upload in IE8.
             if (!file.size) {
@@ -101,6 +105,11 @@ org_mpilone_vaadin_Plupload = function() {
             // Clear the queue.
             uploader.splice(0, files.length);
 	    });
+        
+        uploader.bind('StateChanged', function(up) {
+          console_log("StateChanged: " + up.state);
+          rpcProxy.onStateChanged(up.state);
+        });
 	    
 	    uploader.bind('FileUploaded', function(up, file) {
 	    	console_log("FileUploaded: " + file.name);
@@ -114,6 +123,16 @@ org_mpilone_vaadin_Plupload = function() {
 
 	    uploader.bind('PostInit', function(up) {
 	    	console_log("PostInit: " + up.runtime);
+	    });
+        
+	    uploader.bind('UploadProgress', function(up, file) {
+	    	console_log("UploadProgress: " + file.percent);
+            
+            // Throttle the progress events so we don't flood the RPC channel.
+            if (file.percent - progressPercent > 5) {
+               rpcProxy.onProgress(file.percent);
+               progressPercent = file.percent;
+            }
 	    });
 	    
 	    uploader.bind('FilesRemoved', function(up, files) {

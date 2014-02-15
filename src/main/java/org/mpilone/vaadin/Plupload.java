@@ -144,8 +144,6 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   @Override
   public void detach() {
-    log.debug("Cleaning up stream variable.");
-
     // Cleanup our stream variable.
     getUI().getConnectorTracker().cleanStreamVariable(getConnectorId(),
         "plupload");
@@ -489,7 +487,6 @@ public class Plupload extends AbstractJavaScriptComponent {
   public void interruptUpload() {
     if (uploadSession != null) {
       uploadSession.interrupted = true;
-      getState().interruptUpload = true;
     }
   }
 
@@ -883,13 +880,19 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void onError(PluploadError error) {
-      log.info("Error on upload: [{}] {}", error.getCode(),
+      log.info("Error on upload. Code: {} Message: {}", error.getCode(),
           error.getMessage());
 
       fireUploadInterrupted(uploadSession.filename, uploadSession.mimeType,
           uploadSession.contentLength,
           new RuntimeException(error.getMessage()));
-      endUpload();
+    }
+
+    @Override
+    public void onStateChanged(int state) {
+      if (state == 1 && uploadSession != null) {
+        endUpload();
+      }
     }
 
     @Override
@@ -910,15 +913,24 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void onFileUploaded(String filename, long contentLength) {
-      log.info("Completed upload of file {} with length {}.", filename,
-          contentLength);
+
+      // Ignore if the upload was interrupted because the content can't
+      // be trusted.
+      if (!uploadSession.interrupted) {
+        log.info("Completed upload of file {} with length {}.", filename,
+            contentLength);
 
       // Use bytesRead rather than the given contentLength because it is
-      // unreliable. For example, HTML4 on IE8 will always send null/-1.
-      fireUploadSuccess(filename, uploadSession.mimeType,
-          uploadSession.bytesRead);
-      endUpload();
-      markAsDirty();
+        // unreliable. For example, HTML4 on IE8 will always send null/-1.
+        fireUploadSuccess(filename, uploadSession.mimeType,
+            uploadSession.bytesRead);
+      }
+    }
+
+    @Override
+    public void onProgress(int percent) {
+      // Ignore. We want the call to refresh uploader state (i.e. polling)
+      // but we don't care about the progress value.
     }
 
     @Override
@@ -978,9 +990,9 @@ public class Plupload extends AbstractJavaScriptComponent {
         txOutstream.rollback();
       }
       else if (retryEnabled) {
-          log.warn("Retries are enabled but the content length {} is larger "
-              + "than the maximum data buffer of {}. Duplicate data may be "
-              + "written to the receiver in the event of a partial upload and "
+        log.warn("Retries are enabled but the content length {} is larger "
+            + "than the maximum data buffer of {}. Duplicate data may be "
+            + "written to the receiver in the event of a partial upload and "
             + "retry. Configure chunking to avoid this warning.",
             uploadSession.contentLength, maxRetryBufferSize);
 
@@ -995,7 +1007,7 @@ public class Plupload extends AbstractJavaScriptComponent {
       // same output stream.
       return txOutstream != null ? txOutstream :
           new UncloseableOutputStream(uploadSession.receiverOutstream);
-      }
+    }
 
     @Override
     public void streamingStarted(StreamVariable.StreamingStartEvent event) {
@@ -1038,32 +1050,27 @@ public class Plupload extends AbstractJavaScriptComponent {
     @Override
     public void streamingFailed(StreamVariable.StreamingErrorEvent event) {
       Exception exception = event.getException();
-//      boolean terminal = false;
 
       if (exception instanceof NoInputStreamException) {
-        fireNoInputStream(event.getFileName(),
-            event.getMimeType(), 0);
-//        terminal = true;
+        fireNoInputStream(uploadSession.filename,
+            uploadSession.mimeType, uploadSession.contentLength);
       }
       else if (exception instanceof NoOutputStreamException) {
-        fireNoOutputStream(event.getFileName(),
-            event.getMimeType(), 0);
-//        terminal = true;
+        fireNoOutputStream(uploadSession.filename,
+            uploadSession.mimeType, uploadSession.contentLength);
       }
       else if (exception instanceof FileUploadHandler.UploadInterruptedException) {
-        fireUploadInterrupted(event.getFileName(),
-            event.getMimeType(), 0, exception);
-//        terminal = true;
+        if (!getState().interruptUpload) {
+          // Tell the uploader to stop sending chunks.
+          getState().interruptUpload = true;
+
+          fireUploadInterrupted(uploadSession.filename,
+              uploadSession.mimeType, uploadSession.contentLength, exception);
+        }
       }
 
       // Assume that we'll get an onError RPC call that we can use to 
       // cleanup resources.
-      // Only end the upload if we're not going to retry.
-//      if (terminal || txOutstream == null) {
-//        tryClose(outstream);
-//        outstream = null;
-//        endUpload();
-//      }
     }
   }
 
@@ -1084,6 +1091,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    * The available client side runtimes.
    */
   public enum Runtime {
+
     HTML4,
     FLASH,
     SILVERLIGHT,

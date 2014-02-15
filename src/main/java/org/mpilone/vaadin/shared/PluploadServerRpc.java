@@ -16,5 +16,9 @@ public interface PluploadServerRpc extends ServerRpc {
 
    void onFileUploaded(String filename, long contentLength);
 
-   void onInit(String runtime);
+  void onInit(String runtime);
+
+  void onProgress(int percent);
+
+  void onStateChanged(int state);
 }
