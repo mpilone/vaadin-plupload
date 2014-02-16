@@ -8,9 +8,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.mpilone.vaadin.shared.PluploadError;
-import org.mpilone.vaadin.shared.PluploadServerRpc;
-import org.mpilone.vaadin.shared.PluploadState;
+import org.mpilone.vaadin.shared.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -125,8 +123,6 @@ public class Plupload extends AbstractJavaScriptComponent {
         "plupload/Moxie.xap"));
 
     setRuntimes(Runtime.HTML5, Runtime.FLASH, Runtime.SILVERLIGHT, Runtime.HTML4);
-    setMaxFileSize(10 * 1024 * 1024L);
-    getState().multiSelection = false;
     setReceiver(receiver);
   }
 
@@ -324,6 +320,19 @@ public class Plupload extends AbstractJavaScriptComponent {
   protected void fireNoOutputStream(String filename, String mimeType,
       long length) {
     fireEvent(new NoOutputStreamEvent(this, filename, mimeType,
+        length));
+  }
+
+  /**
+   * Fires the file size exceeded error event to all registered listeners.
+   *
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
+   * @param length the length/size of the file received
+   */
+  protected void fireFileSizeExceeded(String filename, String mimeType,
+      long length) {
+    fireEvent(new FileSizeExceededEvent(this, filename, mimeType,
         length));
   }
 
@@ -658,6 +667,26 @@ public class Plupload extends AbstractJavaScriptComponent {
   }
 
   /**
+   * A failed event describing the maximum file size exceeded on the client
+   * side. This event will occur before the upload is ever started.
+   */
+  public static class FileSizeExceededEvent extends FailedEvent {
+
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     */
+    public FileSizeExceededEvent(Component source, String filename,
+        String mimeType, long length) {
+      super(source, filename, mimeType, length, null);
+    }
+  }
+
+  /**
    * A failed event describing no input stream available for reading.
    */
   public static class NoInputStreamEvent extends FailedEvent {
@@ -883,9 +912,15 @@ public class Plupload extends AbstractJavaScriptComponent {
       log.info("Error on upload. Code: {} Message: {}", error.getCode(),
           error.getMessage());
 
-      fireUploadInterrupted(uploadSession.filename, uploadSession.mimeType,
-          uploadSession.contentLength,
-          new RuntimeException(error.getMessage()));
+      if (ErrorCode.FILE_SIZE_ERROR.getCode().equals(error.getCode())) {
+        fireFileSizeExceeded(error.getFile().getName(), error.getFile().
+            getType(), error.getFile().getSize());
+      }
+      else if (uploadSession != null) {
+        fireUploadInterrupted(uploadSession.filename, uploadSession.mimeType,
+            uploadSession.contentLength,
+            new RuntimeException(error.getMessage()));
+      }
     }
 
     @Override
@@ -896,33 +931,33 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
 
     @Override
-    public void onUploadFile(String filename, long contentLength) {
+    public void onUploadFile(PluploadFile file) {
 
       startUpload();
 
-      if (contentLength != -1) {
-        uploadSession.contentLength = contentLength;
+      if (file.getSize() != -1) {
+        uploadSession.contentLength = file.getSize();
       }
-      uploadSession.filename = filename;
+      uploadSession.filename = file.getName();
 
       log.info("Started upload of file {} with length {}.",
-          filename, contentLength);
+          uploadSession.filename, uploadSession.contentLength);
 
-      fireStarted(filename, null);
+      fireStarted(uploadSession.filename, null);
     }
 
     @Override
-    public void onFileUploaded(String filename, long contentLength) {
+    public void onFileUploaded(PluploadFile file) {
 
       // Ignore if the upload was interrupted because the content can't
       // be trusted.
       if (!uploadSession.interrupted) {
-        log.info("Completed upload of file {} with length {}.", filename,
-            contentLength);
+        log.info("Completed upload of file {} with length {}.", file.getName(),
+            file.getSize());
 
-      // Use bytesRead rather than the given contentLength because it is
+        // Use bytesRead rather than the given contentLength because it is
         // unreliable. For example, HTML4 on IE8 will always send null/-1.
-        fireUploadSuccess(filename, uploadSession.mimeType,
+        fireUploadSuccess(file.getName(), uploadSession.mimeType,
             uploadSession.bytesRead);
       }
     }
@@ -1085,6 +1120,34 @@ public class Plupload extends AbstractJavaScriptComponent {
     String mimeType;
     long bytesRead;
     boolean interrupted;
+  }
+
+  /**
+   * The error codes as defined by Plupload.
+   */
+  public enum ErrorCode {
+
+    GENERIC_ERROR(-100),
+    HTTP_ERROR(-200),
+    IO_ERROR(-300),
+    SECURITY_ERROR(-400),
+    INIT_ERROR(-500),
+    FILE_SIZE_ERROR(-600),
+    FILE_EXTENSION_ERROR(-601),
+    FILE_DUPLICATE_ERROR(-602),
+    IMAGE_FORMAT_ERROR(-700),
+    IMAGE_MEMORY_ERROR(-701),
+    IMAGE_DIMENSIONS_ERROR(-702);
+
+    private final Integer code;
+
+    private ErrorCode(int code) {
+      this.code = code;
+    }
+
+    public Integer getCode() {
+      return code;
+    }
   }
 
   /**

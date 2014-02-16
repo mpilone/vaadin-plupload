@@ -10,11 +10,11 @@ import com.vaadin.shared.communication.ServerRpc;
  * @author mpilone
  */
 public interface PluploadServerRpc extends ServerRpc {
-   void onUploadFile(String filename, long contentLength);
+  void onUploadFile(PluploadFile file);
 
    void onError(PluploadError error);
 
-   void onFileUploaded(String filename, long contentLength);
+  void onFileUploaded(PluploadFile file);
 
   void onInit(String runtime);
 

@@ -56,14 +56,6 @@ public class PluploadState extends JavaScriptComponentState {
   public boolean uniqueNames;
 
   /**
-   * The flag which enables or disables multiple file selection when the user is
-   * browsing for files. Note that event if multiple file selection is disabled,
-   * the user may still add multiple files to the queue by selecting one after
-   * another.
-   */
-  public boolean multiSelection;
-
-  /**
    * The maximum number of times to retry a failed upload or chunk. To disable
    * retries, set to 0.
    */
