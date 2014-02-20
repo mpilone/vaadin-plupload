@@ -19,6 +19,12 @@ public class PluploadState extends JavaScriptComponentState {
   public boolean submitUpload = false;
 
   /**
+   * The flag which indicates if the uploader should be interrupted if currently
+   * uploading.
+   */
+  public boolean interruptUpload = false;
+
+  /**
    * Page URL to where the files will be uploaded to.
    */
   public String url;
@@ -31,17 +37,16 @@ public class PluploadState extends JavaScriptComponentState {
   public String runtimes;
 
   /**
-   * Maximum file size that the user can pick. This string can be in the
-   * following formats 100b, 10kb, 10mb.
+   * Maximum file size that the user can pick in bytes.
    */
   public long maxFileSize;
 
   /**
    * Enables you to chunk the file into smaller pieces for example if your PHP
    * backend has a max post size of 1MB you can chunk a 10MB file into 10
-   * requests. To disable chunking, remove this config option from your setup.
+   * requests. To disable chunking, set to 0.
    */
-  public Long chunkSize;
+  public int chunkSize;
 
   /**
    * Generate unique filenames when uploading. This will generate unique
@@ -51,15 +56,8 @@ public class PluploadState extends JavaScriptComponentState {
   public boolean uniqueNames;
 
   /**
-   * The flag which enables or disables multiple file selection when the user is
-   * browsing for files. Note that event if multiple file selection is disabled,
-   * the user may still add multiple files to the queue by selecting one after
-   * another.
-   */
-  public boolean multiSelection;
-
-  /**
-   * The maximum number of times to retry a failed upload or chunk.
+   * The maximum number of times to retry a failed upload or chunk. To disable
+   * retries, set to 0.
    */
   public int maxRetries;
 

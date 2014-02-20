@@ -1,34 +1,44 @@
 package org.mpilone.vaadin;
 
-import java.io.Closeable;
-import java.io.IOException;
-import java.io.OutputStream;
+import static org.mpilone.vaadin.Streams.tryClose;
+import static org.mpilone.vaadin.Streams.tryCommit;
+
+import java.io.*;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.mpilone.vaadin.shared.PluploadError;
-import org.mpilone.vaadin.shared.PluploadServerRpc;
-import org.mpilone.vaadin.shared.PluploadState;
+import org.mpilone.vaadin.shared.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.vaadin.annotations.JavaScript;
 import com.vaadin.server.*;
+import com.vaadin.server.communication.FileUploadHandler;
 import com.vaadin.ui.AbstractJavaScriptComponent;
 import com.vaadin.ui.Component;
 import com.vaadin.ui.Upload;
 import com.vaadin.util.FileTypeResolver;
 
 /**
+ * <p>
  * Wrapper for the Plupload HTML5/Flash/HTML4 upload component. You can find
- * more information at http://www.plupload.com/. The implementation attempts to
+ * more information at http://www.plupload.com/. This implementation attempts to
  * follow the {@link Upload} API as much as possible to be a drop-in
- * replacement. The Plupload component announces the start of an upload via RPC
- * which means it is possible that the data could begin arriving at the Receiver
- * before the uploadStarted event is fired. Also, the filename passed to the
- * Receiver during output stream creation may be inaccurate as Plupload labels
- * chunks with a filename of "blob".
+ * replacement.
+ * </p>
+ * <p>
+ * The Plupload component announces the start of an upload via RPC which means
+ * it is possible that the data could begin arriving at the Receiver before the
+ * uploadStarted event is fired. Also, the filename passed to the Receiver
+ * during output stream creation may be inaccurate as Plupload labels chunks
+ * with a filename of "blob".
+ * </p>
+ * <p>
+ * When using retries, the incoming data must be buffered in order to reset the
+ * input stream in the event of a partial upload. Therefore it is recommend that
+ * only small files be supported or chunking is used to limit the file size.
+ * </p>
  *
  * @author mpilone
  */
@@ -66,19 +76,14 @@ public class Plupload extends AbstractJavaScriptComponent {
     }
   }
 
-
   private final PluploadServerRpc rpc = new PluploadServerRpcImpl();
-  private boolean interrupted;
   private StreamVariable streamVariable;
   private Upload.Receiver receiver;
-  private long contentLength;
-  private String filename;
-  private String mimeType;
-  private long bytesRead;
-  private Runtime activeRuntime;
+  private Runtime runtime;
+  private int maxRetryBufferSize = 0;
   private final List<Upload.ProgressListener> progressListeners =
       new ArrayList<>();
-  private boolean uploading;
+  private UploadSession uploadSession;
 
   /**
    * Constructs the upload component.
@@ -118,9 +123,6 @@ public class Plupload extends AbstractJavaScriptComponent {
         "plupload/Moxie.xap"));
 
     setRuntimes(Runtime.HTML5, Runtime.FLASH, Runtime.SILVERLIGHT, Runtime.HTML4);
-    setChunkSize(null);
-    setMaxFileSize(10 * 1024 * 1024L);
-    getState().multiSelection = false;
     setReceiver(receiver);
   }
 
@@ -128,6 +130,8 @@ public class Plupload extends AbstractJavaScriptComponent {
   public void attach() {
     super.attach();
 
+    // Get the URL for the stream variable which will also register
+    // it in the connector tracker.
     String url = getSession().getCommunicationManager().
         getStreamVariableTargetUrl(this, "plupload", getStreamVariable());
 
@@ -136,8 +140,6 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   @Override
   public void detach() {
-    log.debug("Cleaning up stream variable.");
-
     // Cleanup our stream variable.
     getUI().getConnectorTracker().cleanStreamVariable(getConnectorId(),
         "plupload");
@@ -170,12 +172,12 @@ public class Plupload extends AbstractJavaScriptComponent {
     // if we know we're going to have multiple chunks. If is a single chunk,
     // the content length may be greater than the overall content length
     // because of the extra fields sent in the multi-part request.
-    if (this.contentLength == contentLength) {
+    if (uploadSession.contentLength == contentLength) {
       // this is implemented differently than other listeners to maintain
       // backwards compatibility
       if (progressListeners != null) {
         for (Upload.ProgressListener l : progressListeners) {
-          l.updateProgress(totalBytes, this.contentLength);
+          l.updateProgress(totalBytes, uploadSession.contentLength);
         }
       }
     }
@@ -292,7 +294,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   protected void fireStarted(String filename, String mimeType) {
     fireEvent(new StartedEvent(this, filename, mimeType,
-        contentLength, activeRuntime));
+        uploadSession.contentLength, runtime));
   }
 
   /**
@@ -318,6 +320,19 @@ public class Plupload extends AbstractJavaScriptComponent {
   protected void fireNoOutputStream(String filename, String mimeType,
       long length) {
     fireEvent(new NoOutputStreamEvent(this, filename, mimeType,
+        length));
+  }
+
+  /**
+   * Fires the file size exceeded error event to all registered listeners.
+   *
+   * @param filename the name of the file provided by the client
+   * @param mimeType the mime-type provided by the client
+   * @param length the length/size of the file received
+   */
+  protected void fireFileSizeExceeded(String filename, String mimeType,
+      long length) {
+    fireEvent(new FileSizeExceededEvent(this, filename, mimeType,
         length));
   }
 
@@ -380,7 +395,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    * @return the number of bytes read
    */
   public long getBytesRead() {
-    return bytesRead;
+    return uploadSession.bytesRead;
   }
 
   /**
@@ -408,13 +423,37 @@ public class Plupload extends AbstractJavaScriptComponent {
 
   /**
    * Sets the size in bytes of each data chunk to be sent from the client to the
-   * server. Not all activeRuntimes support chunking. If set to null, chunking
-   * will be disabled.
+   * server. Not all runtimes support chunking. If set to 0, chunking will be
+   * disabled.
    *
    * @param size the size of each data chunk
    */
-  public void setChunkSize(Long size) {
+  public void setChunkSize(int size) {
     getState().chunkSize = size;
+  }
+
+  /**
+   * Sets the size in bytes of each data chunk to be sent from the client to the
+   * server.
+   *
+   * @return the size of each data chunk
+   */
+  public int getChunkSize() {
+    return getState().chunkSize;
+  }
+
+  /**
+   * Sets the size of the memory buffer used when retries are enabled. Incoming
+   * data is first written to the buffer and committed to the receiver only when
+   * the upload (or chunk) successfully completes. This allows the data to be
+   * abandoned in the event of a partial upload and failure. This value should
+   * always be equal to or greater than the chunk size or the buffer will not be
+   * used.
+   *
+   * @param maxRetryBufferSize the buffer size in bytes
+   */
+  public void setMaxRetryBufferSize(int maxRetryBufferSize) {
+    this.maxRetryBufferSize = maxRetryBufferSize;
   }
 
   /**
@@ -432,6 +471,10 @@ public class Plupload extends AbstractJavaScriptComponent {
    * (this may change in the future).
    */
   public void submitUpload() {
+    if (uploadSession != null) {
+      throw new IllegalStateException("Uploading in progress.");
+    }
+
     getState().submitUpload = true;
   }
 
@@ -442,7 +485,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    * @return the upload size in bytes
    */
   public long getUploadSize() {
-    return contentLength;
+    return uploadSession == null ? -1 : uploadSession.contentLength;
   }
 
   /**
@@ -451,25 +494,27 @@ public class Plupload extends AbstractJavaScriptComponent {
    * actual interrupt will happen a bit later.
    */
   public void interruptUpload() {
-    if (uploading) {
-      interrupted = true;
+    if (uploadSession != null) {
+      uploadSession.interrupted = true;
     }
   }
 
   /**
-   * Go into upload state. This is to prevent double uploading on same
-   * component.
+   * Go into upload state. Due to buffering of RPC calls by Vaadin, it is
+   * possible that the upload could be started by the data stream or the RPC
+   * call. It is safe to call this method multiple times and additional calls
+   * will simply be ignored.
    *
    * Warning: this is an internal method used by the framework and should not be
    * used by user of the Upload component. Using it results in the Upload
    * component going in wrong state and not working. It is currently public
    * because it is used by another class.
    */
-  public void startUpload() {
-    if (uploading) {
-      throw new IllegalStateException("uploading already started");
+  private void startUpload() {
+    if (uploadSession == null) {
+      uploadSession = new UploadSession();
     }
-    uploading = true;
+
     getState().submitUpload = false;
   }
 
@@ -495,13 +540,21 @@ public class Plupload extends AbstractJavaScriptComponent {
    * used by user of the Upload component.
    */
   private void endUpload() {
-    uploading = false;
-    contentLength = -1;
-    bytesRead = 0;
-    filename = null;
-    mimeType = null;
-    interrupted = false;
-    markAsDirty();
+    // Cleanup the receiver stream.
+    if (uploadSession != null) {
+      if (uploadSession.receiverOutstream != null) {
+        tryClose(uploadSession.receiverOutstream);
+      }
+
+      uploadSession = null;
+    }
+//    uploading = false;
+//    contentLength = -1;
+//    bytesRead = 0;
+//    filename = null;
+//    mimeType = null;
+//    interrupted = false;
+    getState().interruptUpload = false;
   }
 
   /**
@@ -510,7 +563,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    * @return the upload in progress
    */
   public boolean isUploading() {
-    return uploading;
+    return uploadSession != null;
   }
 
   /**
@@ -523,11 +576,11 @@ public class Plupload extends AbstractJavaScriptComponent {
   public void setRuntimes(Runtime... runtimes) {
     String value = "";
 
-    for (Runtime runtime : runtimes) {
+    for (Runtime r : runtimes) {
       if (!value.isEmpty()) {
         value += ",";
       }
-      value += runtime.name().toLowerCase();
+      value += r.name().toLowerCase();
     }
 
     getState().runtimes = value;
@@ -536,7 +589,7 @@ public class Plupload extends AbstractJavaScriptComponent {
   /**
    * Returns the list of runtimes that the uploader will attempt to use.
    *
-   * @return the list of activeRuntimes
+   * @return the list of runtimes
    */
   public Runtime[] getRuntimes() {
     String[] runtimes = new String[0];
@@ -546,8 +599,8 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     int i = 0;
     Runtime[] values = new Runtime[runtimes.length];
-    for (String runtime : runtimes) {
-      values[i++] = Runtime.valueOf(runtime.toUpperCase());
+    for (String r : runtimes) {
+      values[i++] = Runtime.valueOf(r.toUpperCase());
     }
 
     return values;
@@ -611,6 +664,26 @@ public class Plupload extends AbstractJavaScriptComponent {
       return length;
     }
 
+  }
+
+  /**
+   * A failed event describing the maximum file size exceeded on the client
+   * side. This event will occur before the upload is ever started.
+   */
+  public static class FileSizeExceededEvent extends FailedEvent {
+
+    /**
+     * Constructs the event.
+     *
+     * @param source the source component
+     * @param filename the name of the file provided by the client
+     * @param mimeType the mime-type provided by the client
+     * @param length the content length in bytes provided by the client
+     */
+    public FileSizeExceededEvent(Component source, String filename,
+        String mimeType, long length) {
+      super(source, filename, mimeType, length, null);
+    }
   }
 
   /**
@@ -836,44 +909,70 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void onError(PluploadError error) {
-      log.debug("onError: [" + error.getCode() + "] " + error.getMessage());
+      log.info("Error on upload. Code: {} Message: {}", error.getCode(),
+          error.getMessage());
 
-      fireUploadInterrupted(filename, mimeType, contentLength,
-          new RuntimeException(error.getMessage()));
-      endUpload();
+      if (ErrorCode.FILE_SIZE_ERROR.getCode().equals(error.getCode())) {
+        fireFileSizeExceeded(error.getFile().getName(), error.getFile().
+            getType(), error.getFile().getSize());
+      }
+      else if (uploadSession != null) {
+        fireUploadInterrupted(uploadSession.filename, uploadSession.mimeType,
+            uploadSession.contentLength,
+            new RuntimeException(error.getMessage()));
+      }
     }
 
     @Override
-    public void onUploadFile(String filename, long contentLength) {
-      log.info("Started upload of file {} with length {}.",
-          filename, contentLength);
-
-      if (contentLength != -1) {
-        Plupload.this.contentLength = contentLength;
+    public void onStateChanged(int state) {
+      if (state == 1 && uploadSession != null) {
+        endUpload();
       }
-      Plupload.this.filename = filename;
+    }
+
+    @Override
+    public void onUploadFile(PluploadFile file) {
 
       startUpload();
-      fireStarted(filename, null);
+
+      if (file.getSize() != -1) {
+        uploadSession.contentLength = file.getSize();
+      }
+      uploadSession.filename = file.getName();
+
+      log.info("Started upload of file {} with length {}.",
+          uploadSession.filename, uploadSession.contentLength);
+
+      fireStarted(uploadSession.filename, null);
     }
 
     @Override
-    public void onFileUploaded(String filename, long contentLength) {
-      log.info("Completed upload of file " + filename + " with length "
-          + contentLength);
+    public void onFileUploaded(PluploadFile file) {
 
-      // Use bytesRead rather than the given contentLength because it is
-      // unreliable. For example, HTML4 on IE8 will always send null/-1.
-      fireUploadSuccess(filename, mimeType, bytesRead);
-      endUpload();
-      markAsDirty();
+      // Ignore if the upload was interrupted because the content can't
+      // be trusted.
+      if (!uploadSession.interrupted) {
+        log.info("Completed upload of file {} with length {}.", file.getName(),
+            file.getSize());
+
+        // Use bytesRead rather than the given contentLength because it is
+        // unreliable. For example, HTML4 on IE8 will always send null/-1.
+        fireUploadSuccess(file.getName(), uploadSession.mimeType,
+            uploadSession.bytesRead);
+      }
+    }
+
+    @Override
+    public void onProgress(int percent) {
+      // Ignore. We want the call to refresh uploader state (i.e. polling)
+      // but we don't care about the progress value.
     }
 
     @Override
     public void onInit(String runtime) {
       log.info("Uploader initialized with runtime {}", runtime);
 
-      Plupload.this.activeRuntime = Runtime.valueOf(runtime.toUpperCase());
+      Plupload.this.runtime = Runtime.valueOf(runtime.toUpperCase());
     }
   }
 
@@ -884,7 +983,8 @@ public class Plupload extends AbstractJavaScriptComponent {
   private class StreamVariableImpl implements
       com.vaadin.server.StreamVariable {
 
-    private OutputStream outstream;
+    private TransactionalOutputStream txOutstream;
+    private long chunkContentLength;
 
     @Override
     public boolean listenProgress() {
@@ -900,127 +1000,153 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public boolean isInterrupted() {
-      return interrupted;
+      return uploadSession == null ? false : uploadSession.interrupted;
     }
 
     @Override
     public OutputStream getOutputStream() {
-      if (outstream == null) {
-        outstream = receiver.receiveUpload(Plupload.this.filename,
-            Plupload.this.mimeType);
+      if (uploadSession.receiverOutstream == null) {
+        uploadSession.receiverOutstream = receiver.receiveUpload(
+            uploadSession.filename, uploadSession.mimeType);
+      }
+
+      // If retries are configured we need to write all incoming input into a
+      // buffer so we can throw it away in the event of a failure.
+      boolean retryEnabled = getState().maxRetries > 0 && maxRetryBufferSize > 0;
+
+      if (retryEnabled && chunkContentLength <= maxRetryBufferSize) {
+        if (txOutstream == null) {
+          log.info("Constructing new retry buffer with capacity {}.",
+              maxRetryBufferSize);
+          txOutstream = new TransactionalOutputStream(maxRetryBufferSize,
+              uploadSession.receiverOutstream);
+        }
+
+        txOutstream.rollback();
+      }
+      else if (retryEnabled) {
+        log.warn("Retries are enabled but the content length {} is larger "
+            + "than the maximum data buffer of {}. Duplicate data may be "
+            + "written to the receiver in the event of a partial upload and "
+            + "retry. Configure chunking to avoid this warning.",
+            uploadSession.contentLength, maxRetryBufferSize);
+
+        txOutstream = null;
+      }
+      else {
+        txOutstream = null;
       }
 
       // We don't want to permit closing of the output stream because
       // we may have a chunked upload that we need to write to the
       // same output stream.
-      return new UncloseableOutputStream(outstream);
+      return txOutstream != null ? txOutstream :
+          new UncloseableOutputStream(uploadSession.receiverOutstream);
     }
 
     @Override
     public void streamingStarted(StreamVariable.StreamingStartEvent event) {
 
-      Plupload that = Plupload.this;
+      startUpload();
 
-      if (that.mimeType == null) {
-        Plupload.this.mimeType = event.getMimeType();
+      if (uploadSession.mimeType == null) {
+        uploadSession.mimeType = event.getMimeType();
       }
-      if (that.filename == null) {
+      if (uploadSession.filename == null) {
         // Try to use the file name from the upload started RPC call which
         // will be correct. Otherwise fall back to the stream started event
         // even though it will most likely contain "blob".
-        that.filename = event.getFileName();
+        uploadSession.filename = event.getFileName();
       }
-      if (that.contentLength < event.getContentLength()) {
+      if (uploadSession.contentLength < event.getContentLength()) {
         // Try to use the file name from the upload started RPC call which
         // will be correct (except for HTML4/IE8). Otherwise fall back to the
         // stream started event even though it may contain the size of just
         // a single blob.
-        that.contentLength = event.getContentLength();
+        uploadSession.contentLength = event.getContentLength();
       }
+
+      chunkContentLength = event.getContentLength();
     }
 
     @Override
     public void streamingFinished(StreamVariable.StreamingEndEvent event) {
+      // Flush the retry stream if we are supporting retries.
+      if (txOutstream != null) {
+        tryCommit(txOutstream);
+      }
+
       // Update the total bytes read. This is needed because this stream
       // may only be one of many chunks.
-      bytesRead += event.getBytesReceived();
-      fireUpdateProgress(bytesRead, contentLength);
-
-      if (bytesRead == contentLength) {
-        // This is the last chunk. Cleanup.
-        outstream = null;
-      }
+      uploadSession.bytesRead += event.getBytesReceived();
+      fireUpdateProgress(uploadSession.bytesRead, uploadSession.contentLength);
     }
 
     @Override
     public void streamingFailed(StreamVariable.StreamingErrorEvent event) {
       Exception exception = event.getException();
+
       if (exception instanceof NoInputStreamException) {
-        fireNoInputStream(event.getFileName(),
-            event.getMimeType(), 0);
+        fireNoInputStream(uploadSession.filename,
+            uploadSession.mimeType, uploadSession.contentLength);
       }
       else if (exception instanceof NoOutputStreamException) {
-        fireNoOutputStream(event.getFileName(),
-            event.getMimeType(), 0);
+        fireNoOutputStream(uploadSession.filename,
+            uploadSession.mimeType, uploadSession.contentLength);
       }
-      else {
-        fireUploadInterrupted(event.getFileName(),
-            event.getMimeType(), 0, exception);
-      }
-      tryClose(outstream);
-      outstream = null;
-      endUpload();
-    }
+      else if (exception instanceof FileUploadHandler.UploadInterruptedException) {
+        if (!getState().interruptUpload) {
+          // Tell the uploader to stop sending chunks.
+          getState().interruptUpload = true;
 
-    /**
-     * Attempts to close the given stream, ignoring exceptions.
-     *
-     * @param closeable the stream to be closed
-     */
-    private void tryClose(Closeable closeable) {
-      try {
-        closeable.close();
+          fireUploadInterrupted(uploadSession.filename,
+              uploadSession.mimeType, uploadSession.contentLength, exception);
+        }
       }
-      catch (IOException ex) {
-        // Ignore
-      }
+
+      // Assume that we'll get an onError RPC call that we can use to 
+      // cleanup resources.
     }
   }
 
   /**
-   * An output stream that ignores close calls.
+   * The information related to a single upload session.
    */
-  private static class UncloseableOutputStream extends OutputStream {
+  private static class UploadSession {
 
-    private final OutputStream delegate;
+    OutputStream receiverOutstream;
+    long contentLength;
+    String filename;
+    String mimeType;
+    long bytesRead;
+    boolean interrupted;
+  }
 
-    /**
-     * Constructs the stream.
-     *
-     * @param delegate the delegate stream to write to
-     */
-    public UncloseableOutputStream(OutputStream delegate) {
-      this.delegate = delegate;
+  /**
+   * The error codes as defined by Plupload.
+   */
+  public enum ErrorCode {
+
+    GENERIC_ERROR(-100),
+    HTTP_ERROR(-200),
+    IO_ERROR(-300),
+    SECURITY_ERROR(-400),
+    INIT_ERROR(-500),
+    FILE_SIZE_ERROR(-600),
+    FILE_EXTENSION_ERROR(-601),
+    FILE_DUPLICATE_ERROR(-602),
+    IMAGE_FORMAT_ERROR(-700),
+    IMAGE_MEMORY_ERROR(-701),
+    IMAGE_DIMENSIONS_ERROR(-702);
+
+    private final Integer code;
+
+    private ErrorCode(int code) {
+      this.code = code;
     }
 
-    @Override
-    public void write(byte[] b) throws IOException {
-      delegate.write(b);
-    }
-
-    @Override
-    public void write(int b) throws IOException {
-      delegate.write(b);
-    }
-
-    @Override
-    public void write(byte[] b, int off, int len) throws IOException {
-      delegate.write(b, off, len);
-    }
-
-    @Override
-    public void close() throws IOException {
-      delegate.flush();
+    public Integer getCode() {
+      return code;
     }
   }
 

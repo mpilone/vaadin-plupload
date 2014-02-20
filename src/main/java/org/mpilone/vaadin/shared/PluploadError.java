@@ -17,8 +17,8 @@ public class PluploadError implements Serializable {
 
   private String message;
   private Integer code;
-  //private PluploadFile file;
-  //private Integer status;
+  private PluploadFile file;
+
 
   /**
    * @return the message
@@ -50,34 +50,19 @@ public class PluploadError implements Serializable {
     this.code = code;
   }
 
-//  /**
-//   * @return the file
-//   */
-//  public PluploadFile getFile() {
-//    return file;
-//  }
-//
-//  /**
-//   * @param file
-//   *          the file to set
-//   */
-//  public void setFile(PluploadFile file) {
-//    this.file = file;
-//  }
+  /**
+   * @return the file
+   */
+  public PluploadFile getFile() {
+    return file;
+  }
 
-//  /**
-//   * @return the status
-//   */
-//  public Integer getStatus() {
-//    return status;
-//  }
-//
-//  /**
-//   * @param status
-//   *          the status to set
-//   */
-//  public void setStatus(Integer status) {
-//    this.status = status;
-//  }
+  /**
+   * @param file
+   *          the file to set
+   */
+  public void setFile(PluploadFile file) {
+    this.file = file;
+  }
 
 }

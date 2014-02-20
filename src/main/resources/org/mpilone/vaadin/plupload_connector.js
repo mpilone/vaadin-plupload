@@ -34,6 +34,8 @@ org_mpilone_vaadin_Plupload = function() {
      * file selection.
      */
     var immediate = false;
+    
+    var progressPercent = 0;
 	
 	/*
 	 * Simple method for logging to the JS console if one is available.
@@ -55,10 +57,10 @@ org_mpilone_vaadin_Plupload = function() {
 			runtimes: state.runtimes,
 		    browse_button : 'plupload_browse_button_' + connectorId,
 		    container : 'plupload_container_' + connectorId,
-		    //max_file_size : state.maxFileSize,
+		    max_file_size : state.maxFileSize,
 		    chunk_size: state.chunkSize,
             max_retries: state.maxRetries,
-		    multi_selection: state.multiSelection,
+		    multi_selection: false,
 		    url: uploadUrl,
 		    flash_swf_url: flashSwfUrl,
 		    silverlight_xap_url: silverlightXapUrl
@@ -67,11 +69,15 @@ org_mpilone_vaadin_Plupload = function() {
 		uploader.bind('UploadFile', function(up, file) {
             console_log("Upload file: " + file.name + " with size " + file.size);
             
+            progressPercent = 0;
+            
             // It appears that size may be null for HTML4 upload in IE8.
-            if (!file.size) {
-              file.size = -1;
-            }
-			rpcProxy.onUploadFile(file.name, file.size);
+            var f = {
+              name: file.name,
+              size: file.size ? file.size : -1,
+              type: file.type ? file.type : null
+            };
+			rpcProxy.onUploadFile(f);
 		});
 
 		uploader.bind('Error', function(up, error) {
@@ -81,8 +87,17 @@ org_mpilone_vaadin_Plupload = function() {
 			}
 			console_log(output);
             
-            error.file = null;
-			rpcProxy.onError(error);
+            var e = {
+              code: error.code,
+              message: error.message,
+              file: {
+                name: error.file ? error.file.name : null,
+                size: error.file ? error.file.size : -1,
+                type: error.file ? error.file.type : null
+              }
+            };
+            
+			rpcProxy.onError(e);
 		});
 		
 		uploader.bind('FilesAdded', function(up, files) {
@@ -101,10 +116,22 @@ org_mpilone_vaadin_Plupload = function() {
             // Clear the queue.
             uploader.splice(0, files.length);
 	    });
+        
+        uploader.bind('StateChanged', function(up) {
+          console_log("StateChanged: " + up.state);
+          rpcProxy.onStateChanged(up.state);
+        });
 	    
 	    uploader.bind('FileUploaded', function(up, file) {
 	    	console_log("FileUploaded: " + file.name);
-	        rpcProxy.onFileUploaded(file.name, file.size);
+            
+            var f = {
+              name: file.name,
+              size: file.size ? file.size : -1,
+              type: file.type ? file.type : null
+            };
+            
+	        rpcProxy.onFileUploaded(f);
 	    });
 	    
 	    uploader.bind('Init', function(up) {
@@ -114,6 +141,16 @@ org_mpilone_vaadin_Plupload = function() {
 
 	    uploader.bind('PostInit', function(up) {
 	    	console_log("PostInit: " + up.runtime);
+	    });
+        
+	    uploader.bind('UploadProgress', function(up, file) {
+	    	console_log("UploadProgress: " + file.percent);
+            
+            // Throttle the progress events so we don't flood the RPC channel.
+            if (file.percent - progressPercent > 5) {
+               rpcProxy.onProgress(file.percent);
+               progressPercent = file.percent;
+            }
 	    });
 	    
 	    uploader.bind('FilesRemoved', function(up, files) {
@@ -164,8 +201,7 @@ org_mpilone_vaadin_Plupload = function() {
 		}
 		
 		// Apply state that doesn't require a rebuild.
-		uploader.settings.multi_selection = state.multiSelection;
-		//uploader.settings.max_file_size = state.maxFileSize;
+		uploader.settings.max_file_size = state.maxFileSize;
 		uploader.settings.chunk_size = state.chunkSize;
         submitBtn.caption.innerHTML = state.buttonCaption;
         immediate = state.immediate;
@@ -204,6 +240,12 @@ org_mpilone_vaadin_Plupload = function() {
 		if (state.submitUpload && uploader.state === plupload.STOPPED) {
 			console_log("Starting upload.");			
 			uploader.start();
+		}
+        
+		// Check for upload stop state change.
+		if (state.interruptUpload && uploader.state === plupload.STARTED) {
+			console_log("Aborting upload.");			
+			uploader.stop();
 		}
 	};
 
