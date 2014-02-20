@@ -1,7 +1,6 @@
 package org.mpilone.vaadin;
 
 import static org.mpilone.vaadin.Streams.tryClose;
-import static org.mpilone.vaadin.Streams.tryCommit;
 
 import java.io.*;
 import java.lang.reflect.Method;
@@ -955,7 +954,7 @@ public class Plupload extends AbstractJavaScriptComponent {
       if (!interrupted) {
         log.info("Completed upload of file {} with length {}.", file.getName(),
             file.getSize());
-        
+
         fireUploadSuccess(evt);
       }
     }
@@ -981,7 +980,6 @@ public class Plupload extends AbstractJavaScriptComponent {
   private class StreamVariableImpl implements
       com.vaadin.server.StreamVariable {
 
-    private TransactionalOutputStream txOutstream;
     private long chunkContentLength;
 
     @Override
@@ -1012,34 +1010,33 @@ public class Plupload extends AbstractJavaScriptComponent {
       // buffer so we can throw it away in the event of a failure.
       boolean retryEnabled = getState().maxRetries > 0 && maxRetryBufferSize > 0;
 
-      if (retryEnabled && chunkContentLength <= maxRetryBufferSize) {
-        if (txOutstream == null) {
+      if (retryEnabled && uploadSession.txOutstream == null) {
+        if (chunkContentLength <= maxRetryBufferSize) {
           log.info("Constructing new retry buffer with capacity {}.",
               maxRetryBufferSize);
-          txOutstream = new TransactionalOutputStream(maxRetryBufferSize,
+          uploadSession.txOutstream = new TransactionalOutputStream(
+              maxRetryBufferSize,
               uploadSession.receiverOutstream);
         }
-
-        txOutstream.rollback();
+        else {
+          log.warn("Retries are enabled but the content length {} is larger "
+              + "than the maximum data buffer of {}. Duplicate data may be "
+              + "written to the receiver in the event of a partial upload and "
+              + "retry. Configure chunking to avoid this warning.",
+              uploadSession.contentLength, maxRetryBufferSize);
+        }
       }
-      else if (retryEnabled) {
-        log.warn("Retries are enabled but the content length {} is larger "
-            + "than the maximum data buffer of {}. Duplicate data may be "
-            + "written to the receiver in the event of a partial upload and "
-            + "retry. Configure chunking to avoid this warning.",
-            uploadSession.contentLength, maxRetryBufferSize);
-
-        txOutstream = null;
-      }
-      else {
-        txOutstream = null;
+      else if (uploadSession.txOutstream != null) {
+        // Make sure the existing tx stream is reset before reusing it.
+        uploadSession.txOutstream.rollback();
       }
 
       // We don't want to permit closing of the output stream because
       // we may have a chunked upload that we need to write to the
       // same output stream.
-      return txOutstream != null ? txOutstream :
-          new UncloseableOutputStream(uploadSession.receiverOutstream);
+      OutputStream outstream = uploadSession.txOutstream != null ?
+          uploadSession.txOutstream : uploadSession.receiverOutstream;
+      return new UncloseableOutputStream(outstream);
     }
 
     @Override
@@ -1070,8 +1067,14 @@ public class Plupload extends AbstractJavaScriptComponent {
     @Override
     public void streamingFinished(StreamVariable.StreamingEndEvent event) {
       // Flush the retry stream if we are supporting retries.
-      if (txOutstream != null) {
-        tryCommit(txOutstream);
+      if (uploadSession.txOutstream != null) {
+        try {
+          uploadSession.txOutstream.commit();
+        }
+        catch (IOException ex) {
+          throw new RuntimeException("Failed to commit stream data for chunk.",
+              ex);
+        }
       }
 
       // Update the total bytes read. This is needed because this stream
@@ -1113,6 +1116,7 @@ public class Plupload extends AbstractJavaScriptComponent {
    */
   private static class UploadSession {
 
+    TransactionalOutputStream txOutstream;
     OutputStream receiverOutstream;
     long contentLength;
     String filename;
