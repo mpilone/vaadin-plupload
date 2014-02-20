@@ -9,14 +9,15 @@ should require relatively few changes to swap between the implementations.
 * Supports multiple client side runtimes (HTML5, Flash, Silverlight, and HTML4)
 * Supports chunked uploading
 * Supports immediate or manual upload initiation
+* Client side maximum file size detection
+* Retry support on failed chunk upload
 * Modeled after the standard Upload component for server side compatibility
 * The standard Vaadin FileUploadHandler is used for incoming data and 
   compatibility 
 
 ## Limitations
 * By using the Upload component API and standard FileUploadHandler, some 
-  features of Plupload are not exposed, such as the upload queue or maximum 
-  file size
+  features of Plupload are not exposed, such as the upload queue
 * Because Plupload announces the start of an upload via RPC, it is possible 
   that the data could begin arriving at the Receiver before the uploadStarted 
   event is fired
@@ -24,8 +25,5 @@ should require relatively few changes to swap between the implementations.
   inaccurate as Plupload labels chunks with a filename of "blob"
 
 ## Future Enhancements
-* Better support for retries by not closing/flushing the input stream until the
-  chunk is successful
-* Support the maximum file size detection on the client side
-  
-This is a work in progress and it has not been thoroughly tested.
+* Better support (i.e. not in-memory only) for retries
+
