@@ -170,10 +170,10 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     // This may be a progress event from a single chunk. We can ignore this
     // if we know we're going to have multiple chunks. If is a single chunk,
-    // the content length may be greater than the overall content length
-    // because of the extra fields sent in the multi-part request.
+    // the content length should be equal to the length reported by the stream
+    // receiver.
     if (uploadSession.contentLength == contentLength) {
-      // this is implemented differently than other listeners to maintain
+      // This is implemented differently than other listeners to maintain
       // backwards compatibility
       if (progressListeners != null) {
         for (Upload.ProgressListener l : progressListeners) {
@@ -548,12 +548,7 @@ public class Plupload extends AbstractJavaScriptComponent {
 
       uploadSession = null;
     }
-//    uploading = false;
-//    contentLength = -1;
-//    bytesRead = 0;
-//    filename = null;
-//    mimeType = null;
-//    interrupted = false;
+
     getState().interruptUpload = false;
   }
 
