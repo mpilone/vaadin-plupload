@@ -150,13 +150,10 @@ public class Plupload extends AbstractJavaScriptComponent {
   /**
    * Fires the upload success event to all registered listeners.
    *
-   * @param filename the name of the file provided by the client
-   * @param mimeType the mime-type provided by the client
-   * @param length the length/size of the file received
+   * @param evt the event details
    */
-  protected void fireUploadSuccess(String filename, String mimeType,
-      long length) {
-    fireEvent(new SucceededEvent(this, filename, mimeType, length));
+  protected void fireUploadSuccess(SucceededEvent evt) {
+    fireEvent(evt);
   }
 
   /**
@@ -326,27 +323,19 @@ public class Plupload extends AbstractJavaScriptComponent {
   /**
    * Fires the file size exceeded error event to all registered listeners.
    *
-   * @param filename the name of the file provided by the client
-   * @param mimeType the mime-type provided by the client
-   * @param length the length/size of the file received
+   * @param evt the event details
    */
-  protected void fireFileSizeExceeded(String filename, String mimeType,
-      long length) {
-    fireEvent(new FileSizeExceededEvent(this, filename, mimeType,
-        length));
+  protected void fireFileSizeExceeded(FileSizeExceededEvent evt) {
+    fireEvent(evt);
   }
 
   /**
    * Fires the upload interrupted error event to all registered listeners.
    *
-   * @param filename the name of the file provided by the client
-   * @param mimeType the mime-type provided by the client
-   * @param length the length/size of the file received
-   * @param e the root exception
+   * @param evt the event details
    */
-  protected void fireUploadInterrupted(String filename, String mimeType,
-      long length, Exception e) {
-    fireEvent(new FailedEvent(this, filename, mimeType, length, e));
+  protected void fireUploadInterrupted(FailedEvent evt) {
+    fireEvent(evt);
   }
 
   /**
@@ -904,25 +893,32 @@ public class Plupload extends AbstractJavaScriptComponent {
 
     @Override
     public void onError(PluploadError error) {
+
+      FailedEvent evt = null;
+      if (uploadSession != null) {
+        evt = new FailedEvent(Plupload.this, uploadSession.filename,
+            uploadSession.mimeType, uploadSession.contentLength,
+            new RuntimeException(error.getMessage()));
+      }
+
+      endUpload();
+
       log.info("Error on upload. Code: {} Message: {}", error.getCode(),
           error.getMessage());
 
       if (ErrorCode.FILE_SIZE_ERROR.getCode().equals(error.getCode())) {
-        fireFileSizeExceeded(error.getFile().getName(), error.getFile().
-            getType(), error.getFile().getSize());
+        fireFileSizeExceeded(
+            new FileSizeExceededEvent(Plupload.this, error.getFile().getName(),
+                error.getFile().getType(), error.getFile().getSize()));
       }
       else if (uploadSession != null) {
-        fireUploadInterrupted(uploadSession.filename, uploadSession.mimeType,
-            uploadSession.contentLength,
-            new RuntimeException(error.getMessage()));
+        fireUploadInterrupted(evt);
       }
     }
 
     @Override
     public void onStateChanged(int state) {
-      if (state == 1 && uploadSession != null) {
-        endUpload();
-      }
+      // no op. Might remove in the future.
     }
 
     @Override
@@ -944,16 +940,23 @@ public class Plupload extends AbstractJavaScriptComponent {
     @Override
     public void onFileUploaded(PluploadFile file) {
 
+      boolean interrupted = uploadSession.interrupted;
+
+      // Use bytesRead rather than the given contentLength because it is
+      // unreliable. For example, HTML4 on IE8 will always send null/-1.
+      SucceededEvent evt = new SucceededEvent(Plupload.this,
+          uploadSession.filename, uploadSession.mimeType,
+          uploadSession.bytesRead);
+
+      endUpload();
+
       // Ignore if the upload was interrupted because the content can't
       // be trusted.
-      if (!uploadSession.interrupted) {
+      if (!interrupted) {
         log.info("Completed upload of file {} with length {}.", file.getName(),
             file.getSize());
-
-        // Use bytesRead rather than the given contentLength because it is
-        // unreliable. For example, HTML4 on IE8 will always send null/-1.
-        fireUploadSuccess(file.getName(), uploadSession.mimeType,
-            uploadSession.bytesRead);
+        
+        fireUploadSuccess(evt);
       }
     }
 
@@ -1094,8 +1097,9 @@ public class Plupload extends AbstractJavaScriptComponent {
           // Tell the uploader to stop sending chunks.
           getState().interruptUpload = true;
 
-          fireUploadInterrupted(uploadSession.filename,
-              uploadSession.mimeType, uploadSession.contentLength, exception);
+          fireUploadInterrupted(new FailedEvent(Plupload.this,
+              uploadSession.filename, uploadSession.mimeType,
+              uploadSession.contentLength, exception));
         }
       }
 
