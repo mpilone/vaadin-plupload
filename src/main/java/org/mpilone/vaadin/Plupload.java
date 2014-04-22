@@ -900,8 +900,6 @@ public class Plupload extends AbstractJavaScriptComponent {
             new RuntimeException(error.getMessage()));
       }
 
-      endUpload();
-
       log.info("Error on upload. Code: {} Message: {}", error.getCode(),
           error.getMessage());
 
@@ -913,6 +911,8 @@ public class Plupload extends AbstractJavaScriptComponent {
       else if (uploadSession != null) {
         fireUploadInterrupted(evt);
       }
+
+      endUpload();
     }
 
     @Override

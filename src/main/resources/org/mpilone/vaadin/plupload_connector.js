@@ -55,8 +55,8 @@ org_mpilone_vaadin_Plupload = function() {
 				
 		var uploader = new plupload.Uploader({
 			runtimes: state.runtimes,
-		    browse_button : 'plupload_browse_button_' + connectorId,
-		    container : 'plupload_container_' + connectorId,
+		    browse_button : browseBtn.root,
+		    container : container,
 		    max_file_size : state.maxFileSize,
 		    chunk_size: state.chunkSize,
             max_retries: state.maxRetries,
