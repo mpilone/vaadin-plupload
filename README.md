@@ -1,5 +1,10 @@
 # Vaadin Plupload
 
+**DEPRECATED:** This repository is no longer being maintained and has been 
+rolled into the more functional 
+[vaadin-html5-upload](https://github.com/mpilone/vaadin-html5-upload) 
+repository. This code remains for archive purposes only.
+
 Vaadin wrapper for the [Plupload](http://www.plupload.com/) 
 HTML5/Flash/Silverlight/HTML4 upload component. The component implements an API
 that is extremely similar to the standard Vaadin Upload component so it
