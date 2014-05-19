@@ -2,7 +2,7 @@
 
 **DEPRECATED:** This repository is no longer being maintained and has been 
 rolled into the more functional 
-[vaadin-html5-upload](https://github.com/mpilone/vaadin-html5-upload) 
+[html5-upload-vaadin](https://github.com/mpilone/html5-upload-vaadin) 
 repository. This code remains for archive purposes only.
 
 Vaadin wrapper for the [Plupload](http://www.plupload.com/) 

@@ -163,6 +163,28 @@ org_mpilone_vaadin_Plupload = function() {
 	    return uploader;
 	}
 	
+/**
+   * Called when the component is being unregistered (i.e. removed) from the UI. 
+   * Cancel an in-progress uploads and destroy the uploader.
+   * 
+   * @returns {undefined}
+   */
+  this.onUnregister = function() {
+    if (uploader) {
+      console_log("Stopping and cleaning up uploader component.");
+
+      try {
+        uploader.stop();
+        uploader.destroy();
+      }
+      catch (ex) {
+        // no op
+      }
+
+      uploader = null;
+    }
+  };
+	
     /*
      * Called when the state on the server side changes. If the state 
      * changes require a rebuild of the upload component, it will be 
